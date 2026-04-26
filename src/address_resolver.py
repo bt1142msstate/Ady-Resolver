@@ -145,6 +145,19 @@ class Resolution:
     top_candidates: Tuple[CandidateScore, ...]
 
 
+FeatureVector = Tuple[float, ...]
+PairTrainingRow = Tuple[FeatureVector, List[FeatureVector]]
+CalibrationTrainingRow = Tuple[FeatureVector, int, float]
+
+
+@dataclass(slots=True)
+class Stage2TrainingRows:
+    pair_rows: List[PairTrainingRow]
+    calibration_rows: List[CalibrationTrainingRow]
+    feature_length: int
+    stats: Dict[str, int]
+
+
 def normalize_text(text: str) -> str:
     text = text.upper().replace("/", " ").replace("-", " ")
     text = PUNCT_RE.sub(" ", text)
@@ -394,6 +407,65 @@ def load_reference(path: Path) -> Tuple[List[ReferenceAddress], Dict[str, Refere
             )
             rows.append(record)
     return rows, {row.address_id: row for row in rows}
+
+
+def reference_dedupe_key(row: ReferenceAddress) -> Tuple[str, ...]:
+    return (
+        row.house_number,
+        row.predir,
+        row.street_name,
+        row.street_type,
+        row.suffixdir,
+        row.unit_type,
+        row.unit_value,
+        row.city,
+        row.state,
+        row.zip_code,
+    )
+
+
+def augment_reference_rows(
+    primary_rows: Sequence[ReferenceAddress],
+    extra_rows: Sequence[ReferenceAddress],
+    id_prefix: str = "AUG",
+) -> Tuple[List[ReferenceAddress], Dict[str, int]]:
+    combined: List[ReferenceAddress] = []
+    seen_keys = set()
+    seen_ids = set()
+    duplicate_address_count = 0
+    renamed_reference_count = 0
+
+    for row in primary_rows:
+        combined.append(row)
+        seen_keys.add(reference_dedupe_key(row))
+        seen_ids.add(row.address_id)
+
+    for row in extra_rows:
+        key = reference_dedupe_key(row)
+        if key in seen_keys:
+            duplicate_address_count += 1
+            continue
+
+        address_id = row.address_id
+        if not address_id or address_id in seen_ids:
+            renamed_reference_count += 1
+            address_id = f"{id_prefix}_{renamed_reference_count:07d}"
+            while address_id in seen_ids:
+                renamed_reference_count += 1
+                address_id = f"{id_prefix}_{renamed_reference_count:07d}"
+
+        combined.append(replace(row, address_id=address_id))
+        seen_keys.add(key)
+        seen_ids.add(address_id)
+
+    return combined, {
+        "base_reference_count": len(primary_rows),
+        "extra_reference_count": len(extra_rows),
+        "added_reference_count": len(combined) - len(primary_rows),
+        "duplicate_address_count": duplicate_address_count,
+        "renamed_reference_count": renamed_reference_count,
+        "combined_reference_count": len(combined),
+    }
 
 
 def load_queries(path: Path) -> List[QueryAddress]:
@@ -1179,10 +1251,12 @@ class Stage2Model:
         resolver: Resolver,
         weights: Sequence[float],
         accept_tree: Optional[Dict[str, object]] = None,
+        training_metadata: Optional[Dict[str, object]] = None,
     ) -> None:
         self.resolver = resolver
         self.weights = tuple(weights)
         self.accept_tree = accept_tree
+        self.training_metadata = dict(training_metadata or {})
         self.rank_cache_limit = 4096
         self._rank_cache: OrderedDict[ParsedAddress, Tuple[Tuple[CandidateScore, ...], Dict[str, CandidateFeatures]]] = OrderedDict()
 
@@ -1205,11 +1279,16 @@ class Stage2Model:
         score = sum(weight * value for weight, value in zip(self.weights, features.values))
         return sigmoid(score)
 
-    def rank_candidates(self, parsed: ParsedAddress, limit: int = 5) -> Tuple[CandidateScore, ...]:
-        cached = self.get_cached_rank(parsed)
+    def rank_candidates(
+        self,
+        parsed: ParsedAddress,
+        limit: int = 5,
+        candidate_limit: Optional[int] = None,
+    ) -> Tuple[CandidateScore, ...]:
+        cached = self.get_cached_rank(parsed) if candidate_limit is None else None
         if cached is None:
             variants = self.resolver.stage2_variants(parsed)
-            candidate_ids = self.resolver.candidate_ids_for_variants(variants)
+            candidate_ids = self.resolver.candidate_ids_for_variants(variants, limit=candidate_limit)
             scored = []
             features_by_id: Dict[str, CandidateFeatures] = {}
             for candidate_id in candidate_ids:
@@ -1220,7 +1299,8 @@ class Stage2Model:
                 )
             scored.sort(key=lambda item: item.score, reverse=True)
             cached = (tuple(scored), features_by_id)
-            self.store_cached_rank(parsed, cached)
+            if candidate_limit is None:
+                self.store_cached_rank(parsed, cached)
         ranked, _ = cached
         return ranked[:limit]
 
@@ -1337,6 +1417,7 @@ class Stage2Model:
         return {
             "weights": list(self.weights),
             "accept_tree": self.accept_tree,
+            "training_metadata": self.training_metadata,
         }
 
     @classmethod
@@ -1348,26 +1429,44 @@ class Stage2Model:
             resolver=resolver,
             weights=[float(value) for value in weights],
             accept_tree=payload.get("accept_tree"),
+            training_metadata=payload.get("training_metadata")
+            if isinstance(payload.get("training_metadata"), dict)
+            else None,
         )
 
 
-def fit_stage2_model(resolver: Resolver, train_queries: Sequence[QueryAddress]) -> Stage2Model:
-    pair_rows: List[Tuple[Tuple[float, ...], List[Tuple[float, ...]]]] = []
-    calibration_rows: List[Tuple[Tuple[float, ...], int, float]] = []
+def build_stage2_training_rows(
+    resolver: Resolver,
+    train_queries: Sequence[QueryAddress],
+    candidate_limit: int = 40,
+) -> Stage2TrainingRows:
+    pair_rows: List[PairTrainingRow] = []
+    calibration_rows: List[CalibrationTrainingRow] = []
     feature_length = 0
+    stats: Counter[str] = Counter()
 
     for query in train_queries:
+        stats["training_queries"] += 1
+        if query.label == 1:
+            stats["positive_queries"] += 1
+        else:
+            stats["negative_queries"] += 1
+
         parsed = resolver.parse(query.query_address)
         variants = resolver.stage2_variants(parsed)
-        candidate_ids = resolver.candidate_ids_for_variants(variants, limit=40)
+        candidate_ids = resolver.candidate_ids_for_variants(variants, limit=candidate_limit)
         if query.label == 1 and query.true_match_id and query.true_match_id not in candidate_ids:
             candidate_ids.append(query.true_match_id)
+            stats["forced_positive_candidates"] += 1
 
         seen = set()
-        negatives: List[Tuple[Tuple[float, ...], float]] = []
-        positive_values: Optional[Tuple[float, ...]] = None
+        negatives: List[Tuple[FeatureVector, float]] = []
+        positive_values: Optional[FeatureVector] = None
         for candidate_id in candidate_ids:
             if candidate_id in seen:
+                continue
+            if candidate_id not in resolver.reference_by_id:
+                stats["missing_reference_candidates"] += 1
                 continue
             seen.add(candidate_id)
             features = resolver.candidate_features_for_variants(variants, candidate_id)
@@ -1379,7 +1478,7 @@ def fit_stage2_model(resolver: Resolver, train_queries: Sequence[QueryAddress]) 
                 negatives.append((features.values, resolver.rough_score(parsed, resolver.reference_by_id[candidate_id])))
 
         negatives.sort(key=lambda item: item[1], reverse=True)
-        if query.label == 1 and positive_values is None and query.true_match_id:
+        if query.label == 1 and positive_values is None and query.true_match_id in resolver.reference_by_id:
             features = resolver.candidate_features(parsed, query.true_match_id)
             feature_length = len(features.values)
             positive_values = features.values
@@ -1388,6 +1487,8 @@ def fit_stage2_model(resolver: Resolver, train_queries: Sequence[QueryAddress]) 
             hard_negatives = [values for values, _ in negatives[:4]]
             if hard_negatives:
                 pair_rows.append((positive_values, hard_negatives))
+                stats["rough_hard_negative_rows"] += 1
+                stats["rough_hard_negatives"] += len(hard_negatives)
             calibration_rows.append((positive_values, 1, 1.0))
             for values, _ in negatives[:2]:
                 calibration_rows.append((values, 0, 0.5))
@@ -1395,12 +1496,29 @@ def fit_stage2_model(resolver: Resolver, train_queries: Sequence[QueryAddress]) 
             for values, _ in negatives[:2]:
                 calibration_rows.append((values, 0, 0.35))
 
+    stats["pair_rows"] = len(pair_rows)
+    stats["calibration_rows"] = len(calibration_rows)
+    return Stage2TrainingRows(pair_rows, calibration_rows, feature_length, dict(stats))
+
+
+def train_stage2_weights(
+    pair_rows: Sequence[PairTrainingRow],
+    calibration_rows: Sequence[CalibrationTrainingRow],
+    feature_length: int,
+    pair_epochs: int = 10,
+    calibration_epochs: int = 6,
+) -> List[float]:
     weights = [0.0] * feature_length
+    if feature_length <= 0:
+        return weights
+
+    pair_rows = list(pair_rows)
+    calibration_rows = list(calibration_rows)
 
     pair_learning_rate = 0.08
     pair_l2 = 0.0001
     pair_rng = random.Random(17)
-    for epoch in range(10):
+    for epoch in range(pair_epochs):
         pair_rng.shuffle(pair_rows)
         margin_target = 0.35
         for positive_values, negative_values_list in pair_rows:
@@ -1425,7 +1543,7 @@ def fit_stage2_model(resolver: Resolver, train_queries: Sequence[QueryAddress]) 
         positive_scale = negatives / positives if positives and negatives else 1.0
         negative_scale = 1.0
 
-        for epoch in range(6):
+        for epoch in range(calibration_epochs):
             calibration_rng.shuffle(calibration_rows)
             for values, label, row_weight in calibration_rows:
                 margin = sum(weight * value for weight, value in zip(weights, values))
@@ -1437,9 +1555,110 @@ def fit_stage2_model(resolver: Resolver, train_queries: Sequence[QueryAddress]) 
                     weights[idx] += calibration_learning_rate * (error * value - regularization)
             calibration_learning_rate *= 0.9
 
-    rank_model = Stage2Model(resolver=resolver, weights=weights)
+    return weights
 
-    accept_rows: List[Tuple[Tuple[float, ...], int]] = []
+
+def mine_stage2_hard_negatives(
+    resolver: Resolver,
+    train_queries: Sequence[QueryAddress],
+    model: Stage2Model,
+    candidate_limit: int = 80,
+    ranked_limit: int = 8,
+) -> Stage2TrainingRows:
+    pair_rows: List[PairTrainingRow] = []
+    calibration_rows: List[CalibrationTrainingRow] = []
+    feature_length = len(model.weights)
+    stats: Counter[str] = Counter()
+
+    for query in train_queries:
+        parsed = resolver.parse(query.query_address)
+        variants = resolver.stage2_variants(parsed)
+        ranked = model.rank_candidates(parsed, limit=ranked_limit, candidate_limit=candidate_limit)
+        if not ranked:
+            continue
+        stats["mined_queries_with_candidates"] += 1
+
+        if query.label == 1:
+            if not query.true_match_id or query.true_match_id not in resolver.reference_by_id:
+                continue
+
+            positive_features = resolver.candidate_features_for_variants(variants, query.true_match_id)
+            positive_values = positive_features.values
+            feature_length = len(positive_values)
+            true_rank = next(
+                (idx for idx, candidate in enumerate(ranked) if candidate.reference_id == query.true_match_id),
+                None,
+            )
+            true_score = (
+                ranked[true_rank].score
+                if true_rank is not None
+                else model.predict_probability(positive_features)
+            )
+            wrong_candidates: List[FeatureVector] = []
+            for candidate in ranked:
+                if candidate.reference_id == query.true_match_id:
+                    continue
+                features = resolver.candidate_features_for_variants(variants, candidate.reference_id)
+                competitive = true_rank != 0 or candidate.score >= 0.40 or true_score - candidate.score < 0.20
+                if not competitive:
+                    continue
+                wrong_candidates.append(features.values)
+                calibration_rows.append((features.values, 0, 0.85))
+                stats["mined_positive_negative_calibration_rows"] += 1
+                if len(wrong_candidates) >= 3:
+                    break
+
+            if wrong_candidates:
+                repeat_count = 2 if true_rank != 0 else 1
+                for _ in range(repeat_count):
+                    pair_rows.append((positive_values, wrong_candidates))
+                stats["mined_pair_rows"] += repeat_count
+                stats["mined_positive_hard_negatives"] += len(wrong_candidates) * repeat_count
+                if true_rank != 0:
+                    stats["first_pass_positive_rank_errors"] += 1
+        else:
+            for candidate in ranked[:3]:
+                if candidate.score < 0.35:
+                    continue
+                features = resolver.candidate_features_for_variants(variants, candidate.reference_id)
+                feature_length = len(features.values)
+                calibration_rows.append((features.values, 0, 0.9))
+                stats["mined_no_match_calibration_rows"] += 1
+
+    stats["pair_rows"] = len(pair_rows)
+    stats["calibration_rows"] = len(calibration_rows)
+    return Stage2TrainingRows(pair_rows, calibration_rows, feature_length, dict(stats))
+
+
+def fit_stage2_model(resolver: Resolver, train_queries: Sequence[QueryAddress]) -> Stage2Model:
+    base_rows = build_stage2_training_rows(resolver, train_queries)
+    first_pass_weights = train_stage2_weights(
+        base_rows.pair_rows,
+        base_rows.calibration_rows,
+        base_rows.feature_length,
+    )
+    first_pass_model = Stage2Model(resolver=resolver, weights=first_pass_weights)
+    mined_rows = mine_stage2_hard_negatives(resolver, train_queries, first_pass_model)
+
+    pair_rows = [*base_rows.pair_rows, *mined_rows.pair_rows]
+    calibration_rows = [*base_rows.calibration_rows, *mined_rows.calibration_rows]
+    feature_length = max(base_rows.feature_length, mined_rows.feature_length)
+    if mined_rows.pair_rows or mined_rows.calibration_rows:
+        weights = train_stage2_weights(pair_rows, calibration_rows, feature_length)
+    else:
+        weights = first_pass_weights
+
+    training_metadata: Dict[str, object] = {
+        "hard_negative_mining": True,
+        "base": base_rows.stats,
+        "mined": mined_rows.stats,
+        "final_pair_rows": len(pair_rows),
+        "final_calibration_rows": len(calibration_rows),
+    }
+
+    rank_model = Stage2Model(resolver=resolver, weights=weights, training_metadata=training_metadata)
+
+    accept_rows: List[Tuple[FeatureVector, int]] = []
     for query in train_queries:
         parsed = resolver.parse(query.query_address)
         ranked = rank_model.rank_candidates(parsed)
@@ -1456,7 +1675,13 @@ def fit_stage2_model(resolver: Resolver, train_queries: Sequence[QueryAddress]) 
         )
 
     accept_tree = fit_probability_tree(accept_rows, max_depth=4, min_leaf=40)
-    return Stage2Model(resolver=resolver, weights=weights, accept_tree=accept_tree)
+    training_metadata["accept_rows"] = len(accept_rows)
+    return Stage2Model(
+        resolver=resolver,
+        weights=weights,
+        accept_tree=accept_tree,
+        training_metadata=training_metadata,
+    )
 
 
 def is_correct(query: QueryAddress, resolution: Resolution) -> bool:
@@ -1583,6 +1808,9 @@ def choose_review_threshold(resolutions: Iterable[Tuple[QueryAddress, Resolution
 
 
 def save_model(path: Path, model: Stage2Model, accept_threshold: float, review_threshold: float, metadata: Dict[str, object]) -> None:
+    metadata = dict(metadata)
+    if model.training_metadata:
+        metadata["stage2_training"] = model.training_metadata
     payload = {
         "model": model.to_dict(),
         "accept_threshold": accept_threshold,
@@ -1757,6 +1985,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset-dir", type=Path, default=Path.cwd() / "datasets" / "address_dataset", help="Directory containing reference_addresses.csv and queries.csv.")
     parser.add_argument("--train-dataset-dir", type=Path, help="Optional dataset directory used only for model fitting.")
     parser.add_argument("--eval-dataset-dir", type=Path, help="Optional dataset directory used only for prediction/evaluation.")
+    parser.add_argument(
+        "--augment-eval-reference-csv",
+        type=Path,
+        help="Optional full reference CSV to append to the eval reference set as live-scale distractors while preserving eval labels.",
+    )
+    parser.add_argument("--query-limit", type=int, help="Optional cap on eval queries for fast smoke runs.")
     parser.add_argument("--output-dir", type=Path, default=Path.cwd() / "runs" / "resolver_output", help="Directory for predictions and evaluation reports.")
     parser.add_argument("--model-path", type=Path, default=Path.cwd() / "models" / "stage2_model.json", help="Path to saved Stage 2 model JSON.")
     parser.add_argument("--compare-variants", action="store_true", help="In predict mode, also compute stage2-only comparison metrics instead of only the combined pipeline.")
@@ -1770,9 +2004,16 @@ def main() -> None:
     dataset_dir = args.dataset_dir.expanduser().resolve()
     train_dataset_dir = (args.train_dataset_dir.expanduser().resolve() if args.train_dataset_dir else dataset_dir)
     eval_dataset_dir = (args.eval_dataset_dir.expanduser().resolve() if args.eval_dataset_dir else dataset_dir)
+    augment_eval_reference_csv = (
+        args.augment_eval_reference_csv.expanduser().resolve()
+        if args.augment_eval_reference_csv
+        else None
+    )
     output_dir = args.output_dir.expanduser().resolve()
     model_path = args.model_path.expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
+    if args.query_limit is not None and args.query_limit <= 0:
+        raise SystemExit("--query-limit must be greater than zero.")
 
     if args.mode in {"train", "fit-predict"}:
         train_reference_rows, _ = load_reference(train_dataset_dir / "reference_addresses.csv")
@@ -1811,7 +2052,23 @@ def main() -> None:
             return
 
     eval_reference_rows, _ = load_reference(eval_dataset_dir / "reference_addresses.csv")
+    reference_augmentation: Dict[str, int] = {
+        "base_reference_count": len(eval_reference_rows),
+        "extra_reference_count": 0,
+        "added_reference_count": 0,
+        "duplicate_address_count": 0,
+        "renamed_reference_count": 0,
+        "combined_reference_count": len(eval_reference_rows),
+    }
+    if augment_eval_reference_csv:
+        extra_reference_rows, _ = load_reference(augment_eval_reference_csv)
+        eval_reference_rows, reference_augmentation = augment_reference_rows(
+            eval_reference_rows,
+            extra_reference_rows,
+        )
     eval_queries = load_queries(eval_dataset_dir / "queries.csv")
+    if args.query_limit is not None:
+        eval_queries = eval_queries[: args.query_limit]
     eval_city_lookup = build_city_lookup(eval_reference_rows)
     eval_resolver = Resolver(eval_reference_rows, eval_city_lookup)
 
@@ -1824,6 +2081,10 @@ def main() -> None:
 
     fast_predict = args.fast_predict and args.mode == "predict"
     compare_variants = (args.compare_variants or args.mode != "predict") and not fast_predict
+    effective_jobs = max(1, args.jobs)
+    if augment_eval_reference_csv and effective_jobs > 1:
+        print("Augmented eval references are resolved in-process; using --jobs 1 for this run.")
+        effective_jobs = 1
     started = time.perf_counter()
     stage1_resolutions, stage2_resolutions, combined_resolutions = resolve_queries(
         resolver=eval_resolver,
@@ -1832,7 +2093,7 @@ def main() -> None:
         accept_threshold=accept_threshold,
         review_threshold=review_threshold,
         compute_stage2_for_all=compare_variants,
-        jobs=max(1, args.jobs),
+        jobs=effective_jobs,
         eval_dataset_dir=eval_dataset_dir,
         model_path=model_path,
     )
@@ -1844,10 +2105,14 @@ def main() -> None:
         "dataset_dir": str(dataset_dir),
         "train_dataset_dir": str(train_dataset_dir),
         "eval_dataset_dir": str(eval_dataset_dir),
+        "augment_eval_reference_csv": str(augment_eval_reference_csv) if augment_eval_reference_csv else "",
         "output_dir": str(output_dir),
         "model_path": str(model_path),
         "query_count": len(eval_queries),
         "reference_count": len(eval_reference_rows),
+        "reference_augmentation": reference_augmentation,
+        "jobs": effective_jobs,
+        "query_limit": args.query_limit,
         "accept_threshold": accept_threshold,
         "review_threshold": review_threshold,
         "runtime_seconds": round(runtime_seconds, 4),

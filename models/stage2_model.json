@@ -1,194 +1,236 @@
 {
   "model": {
     "weights": [
-      -15.946073059638833,
-      13.186042568002046,
-      4.9376011188453965,
-      0.4649482065921876,
-      -1.5209967023551758,
-      1.4992482012501314,
-      0.7314203284082176,
-      0.45114963996271346,
-      0.15536864819160745,
-      0.9524973402600102,
-      1.3648171052413287,
-      0.46247482231138143,
+      -16.448925104173334,
+      14.247047792886661,
+      3.3755328570181025,
+      0.0037560722007431826,
+      -0.7423857120460953,
+      1.2220473504241305,
+      0.5800943060322701,
+      0.18952681635141494,
+      0.1886512119167972,
+      0.554901525067687,
+      1.0909889795238876,
+      0.36814150324749795,
       0.0,
-      -0.46748231406062996,
-      -1.343032440368847,
-      -0.6547679107409752,
-      2.6324266415444852,
-      -1.1727067284424817,
-      1.103510191627113,
-      0.7995402061387954,
-      0.0005242126409074736,
-      2.7237564386861766,
-      0.02365514269255247
+      -0.04461111963424544,
+      -1.0334617131722246,
+      -1.163948664081642,
+      2.838542831058772,
+      -0.7313946735555009,
+      0.5082682310353286,
+      0.28224158438160385,
+      0.0801747372414706,
+      2.6533151731338247,
+      0.81747199058784
     ],
     "accept_tree": {
       "leaf": false,
       "feature_idx": 13,
-      "threshold": 0.8521242551105279,
+      "threshold": 0.7188798014821003,
       "left": {
         "leaf": false,
         "feature_idx": 14,
-        "threshold": 0.5210505774478286,
+        "threshold": 0.3812013512311523,
         "left": {
           "leaf": false,
           "feature_idx": 14,
-          "threshold": 0.32705255896744323,
+          "threshold": 0.14081672274960655,
           "left": {
             "leaf": false,
             "feature_idx": 0,
-            "threshold": 0.8761904761904762,
+            "threshold": 0.868421052631579,
             "left": {
               "leaf": true,
-              "probability": 0.024423963133640553,
-              "count": 13020
+              "probability": 0.013567710555508148,
+              "count": 11719
             },
             "right": {
               "leaf": true,
-              "probability": 0.2886178861788618,
-              "count": 246
+              "probability": 0.1688888888888889,
+              "count": 225
             }
           },
           "right": {
             "leaf": false,
-            "feature_idx": 3,
-            "threshold": 0.5555555555555556,
+            "feature_idx": 0,
+            "threshold": 0.64,
             "left": {
               "leaf": true,
-              "probability": 0.13807531380753138,
-              "count": 478
+              "probability": 0.07440212577502214,
+              "count": 1129
             },
             "right": {
               "leaf": true,
-              "probability": 0.4167852062588905,
-              "count": 703
+              "probability": 0.28003314001657,
+              "count": 1207
             }
           }
         },
         "right": {
           "leaf": false,
-          "feature_idx": 4,
-          "threshold": 0.64,
+          "feature_idx": 14,
+          "threshold": 0.5042573035407321,
           "left": {
             "leaf": false,
-            "feature_idx": 0,
-            "threshold": 0.9538461538461539,
+            "feature_idx": 3,
+            "threshold": 0.5714285714285714,
             "left": {
               "leaf": true,
-              "probability": 0.41909814323607425,
-              "count": 377
+              "probability": 0.33,
+              "count": 200
             },
             "right": {
               "leaf": true,
-              "probability": 0.825,
-              "count": 40
+              "probability": 0.5616438356164384,
+              "count": 438
             }
           },
           "right": {
             "leaf": false,
-            "feature_idx": 3,
-            "threshold": 0.7,
+            "feature_idx": 1,
+            "threshold": 0.6451612903225806,
             "left": {
               "leaf": true,
-              "probability": 0.5390946502057613,
-              "count": 243
+              "probability": 0.8557692307692307,
+              "count": 416
             },
             "right": {
               "leaf": true,
-              "probability": 0.8651162790697674,
-              "count": 645
+              "probability": 0.6075949367088608,
+              "count": 237
             }
           }
         }
       },
       "right": {
         "leaf": false,
-        "feature_idx": 4,
-        "threshold": 0.96,
+        "feature_idx": 13,
+        "threshold": 0.8593128536513301,
         "left": {
           "leaf": false,
           "feature_idx": 14,
-          "threshold": 0.3686701241876529,
+          "threshold": 0.44294790514611143,
           "left": {
             "leaf": false,
-            "feature_idx": 13,
-            "threshold": 0.9177481493173804,
+            "feature_idx": 14,
+            "threshold": 0.35367567533729294,
             "left": {
               "leaf": true,
-              "probability": 0.23880597014925373,
-              "count": 67
+              "probability": 0.2640449438202247,
+              "count": 178
             },
             "right": {
               "leaf": true,
-              "probability": 0.5555555555555556,
-              "count": 72
+              "probability": 0.5272727272727272,
+              "count": 55
             }
           },
           "right": {
             "leaf": false,
-            "feature_idx": 13,
-            "threshold": 0.8894644269255607,
+            "feature_idx": 14,
+            "threshold": 0.6681282983918273,
             "left": {
               "leaf": true,
-              "probability": 0.5777777777777777,
-              "count": 90
+              "probability": 0.7316176470588235,
+              "count": 272
             },
             "right": {
               "leaf": true,
-              "probability": 0.7365591397849462,
-              "count": 186
+              "probability": 0.9340659340659341,
+              "count": 819
             }
           }
         },
         "right": {
           "leaf": false,
-          "feature_idx": 0,
-          "threshold": 0.5507246376811594,
+          "feature_idx": 4,
+          "threshold": 0.96,
           "left": {
-            "leaf": false,
-            "feature_idx": 14,
-            "threshold": 0.36145004194107455,
-            "left": {
-              "leaf": true,
-              "probability": 0.3877551020408163,
-              "count": 49
-            },
-            "right": {
-              "leaf": true,
-              "probability": 0.8131868131868132,
-              "count": 91
-            }
+            "leaf": true,
+            "probability": 0.7272727272727273,
+            "count": 77
           },
           "right": {
             "leaf": false,
-            "feature_idx": 13,
-            "threshold": 0.9368291792969076,
+            "feature_idx": 14,
+            "threshold": 0.44142371119650015,
             "left": {
               "leaf": true,
-              "probability": 0.9116104868913858,
-              "count": 1335
+              "probability": 0.9525919361984936,
+              "count": 2257
             },
             "right": {
               "leaf": true,
-              "probability": 0.9942018408141751,
-              "count": 24663
+              "probability": 0.9974432310625758,
+              "count": 23076
             }
           }
         }
       }
+    },
+    "training_metadata": {
+      "hard_negative_mining": true,
+      "base": {
+        "training_queries": 42305,
+        "positive_queries": 28320,
+        "rough_hard_negative_rows": 27905,
+        "rough_hard_negatives": 110555,
+        "forced_positive_candidates": 495,
+        "negative_queries": 13985,
+        "pair_rows": 27905,
+        "calibration_rows": 111719
+      },
+      "mined": {
+        "mined_queries_with_candidates": 42305,
+        "mined_positive_negative_calibration_rows": 8167,
+        "mined_pair_rows": 5359,
+        "mined_positive_hard_negatives": 9899,
+        "first_pass_positive_rank_errors": 590,
+        "mined_no_match_calibration_rows": 3618,
+        "pair_rows": 5359,
+        "calibration_rows": 11785
+      },
+      "final_pair_rows": 33264,
+      "final_calibration_rows": 123504,
+      "accept_rows": 42305
     }
   },
-  "accept_threshold": 0.42,
-  "review_threshold": 0.92,
+  "accept_threshold": 0.34,
+  "review_threshold": 0.86,
   "metadata": {
     "train_dataset_dir": "/Users/brandont/Documents/Ady Resolver/datasets/fresh_60k_compound/train_dataset",
     "eval_dataset_dir": "/Users/brandont/Documents/Ady Resolver/datasets/fresh_60k_compound/eval_dataset",
     "query_count": 60000,
     "reference_count": 5000,
     "train_query_count": 42305,
-    "calibration_query_count": 8845
+    "calibration_query_count": 8845,
+    "stage2_training": {
+      "hard_negative_mining": true,
+      "base": {
+        "training_queries": 42305,
+        "positive_queries": 28320,
+        "rough_hard_negative_rows": 27905,
+        "rough_hard_negatives": 110555,
+        "forced_positive_candidates": 495,
+        "negative_queries": 13985,
+        "pair_rows": 27905,
+        "calibration_rows": 111719
+      },
+      "mined": {
+        "mined_queries_with_candidates": 42305,
+        "mined_positive_negative_calibration_rows": 8167,
+        "mined_pair_rows": 5359,
+        "mined_positive_hard_negatives": 9899,
+        "first_pass_positive_rank_errors": 590,
+        "mined_no_match_calibration_rows": 3618,
+        "pair_rows": 5359,
+        "calibration_rows": 11785
+      },
+      "final_pair_rows": 33264,
+      "final_calibration_rows": 123504,
+      "accept_rows": 42305
+    }
   }
 }

@@ -18,7 +18,7 @@ standardized, scored, and matched.
   addressing ZIPs, OpenAddresses processed extracts, OpenAddresses source
   services, NAD text exports, and manual verified supplements.
 - Locality-aware resolver pipeline with deterministic Stage 1 rules and a
-  lightweight Stage 2 model.
+  lightweight Stage 2 model trained with mined hard negatives.
 - Typo handling for street names, street suffixes, city names, directionals,
   and compounded input errors such as `101 candoowse sr newtooon MS`.
 - Data-quality guards for obvious parcel/location artifacts such as zero house
@@ -228,6 +228,11 @@ python3 src/address_resolver.py \
   --jobs 4
 ```
 
+Stage 2 training runs a first-pass model, mines high-scoring wrong candidates
+and no-match false-positive candidates, then retrains with those hard examples.
+The saved model metadata records the base/mined row counts so each run can be
+audited.
+
 To explicitly check whether Stage 2 is helping, run prediction with variant
 comparison enabled:
 
@@ -243,6 +248,32 @@ python3 src/address_resolver.py \
 
 The resulting `evaluation.json` contains `variants.stage1_only`,
 `variants.stage2_only`, `variants.combined`, and `comparisons.*_delta` blocks.
+
+To evaluate a labeled sample against the full local Mississippi reference cache
+as production-scale distractors, append the full reference CSV instead of
+replacing the labeled eval reference IDs:
+
+```bash
+python3 src/address_resolver.py \
+  --mode predict \
+  --eval-dataset-dir datasets/fresh_60k_compound/eval_dataset \
+  --model-path models/stage2_model.json \
+  --output-dir runs/live_reference_smoke \
+  --augment-eval-reference-csv datasets/ms_full_reference/reference_addresses.csv \
+  --query-limit 1000 \
+  --compare-variants \
+  --jobs 1
+```
+
+Current checked-in model smoke results on April 25, 2026:
+
+- 60k compound eval, 5k-reference candidate universe: combined accuracy
+  `0.9505`, recall `0.9492`, precision `0.9752`.
+- 1k live-reference smoke, 1.75M-reference candidate universe: combined
+  accuracy `0.810`, recall `0.810`, precision `0.9747`.
+- The live-reference smoke improved over the previous default model, which
+  scored combined accuracy `0.776`, recall `0.776`, precision `0.9676` on the
+  same 1k query slice.
 
 Run the local resolver app:
 
