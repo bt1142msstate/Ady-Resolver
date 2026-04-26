@@ -391,9 +391,15 @@ stage, and top candidates. Use the Add Verified Address form for confirmed
 missing addresses; duplicates are detected and will not be added twice. Use the
 feedback controls under each resolver result to capture real user misses for the
 next active-learning training run. Feedback now queues background retraining
-automatically. A Correct or Save Correction click also adds an exact-input
-override, so resolving the same typo again can return a trusted
-`feedback_override` match immediately while the model update runs.
+automatically and the Training panel shows progress while a run is active. A
+Correct or Save Correction click also adds an exact-input override, so resolving
+the same typo again can return a trusted `feedback_override` match immediately
+while the model update runs.
+
+The Batch Resolve panel accepts `.csv` and `.xlsx` files with an address column.
+It returns an `.xlsx` report with source row, original address, standardized
+address, resolved address, confidence, review flag, match ID, stage, and the top
+three candidate addresses.
 
 ## Tests
 

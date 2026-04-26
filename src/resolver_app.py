@@ -6,14 +6,19 @@ import argparse
 import json
 import sys
 import csv
+import io
+import re
 import subprocess
 import threading
+import zipfile
 from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlparse
+from xml.etree import ElementTree
+from xml.sax.saxutils import escape as xml_escape
 
 from address_dataset_generator import (
     AddressRecord,
@@ -429,6 +434,53 @@ HTML = """<!doctype html>
     .train-status.ok { color: var(--good); font-weight: 700; }
     .train-status.bad { color: var(--bad); font-weight: 700; }
 
+    .training-progress {
+      height: 9px;
+      border: 1px solid var(--line-strong);
+      border-radius: 999px;
+      background: var(--panel-soft);
+      overflow: hidden;
+    }
+
+    .training-progress-bar {
+      width: 0;
+      height: 100%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, var(--accent), #60a5fa);
+      transition: width 240ms ease;
+    }
+
+    .batch-form {
+      border-top: 1px solid var(--line);
+      padding: 12px;
+      display: grid;
+      gap: 10px;
+    }
+
+    input[type="file"] {
+      min-height: auto;
+      font-size: 13px;
+      padding: 10px;
+    }
+
+    .batch-status {
+      min-height: 18px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+    }
+
+    .batch-status.ok { color: var(--good); font-weight: 700; }
+    .batch-status.bad { color: var(--bad); font-weight: 700; }
+
+    .download-link {
+      color: var(--accent);
+      font-size: 13px;
+      font-weight: 750;
+      text-decoration: none;
+    }
+
     .feedback {
       border: 1px solid var(--line);
       border-radius: 8px;
@@ -580,8 +632,24 @@ HTML = """<!doctype html>
         <h2>Training</h2>
         <div class="train-form">
           <button class="primary" id="update-training">Train Now</button>
+          <div class="training-progress" aria-label="Training progress">
+            <div class="training-progress-bar" id="training-progress-bar"></div>
+          </div>
           <div class="train-status" id="train-status"></div>
         </div>
+        <h2>Batch Resolve</h2>
+        <form class="batch-form" id="batch-form">
+          <div>
+            <label for="batch-file">CSV or Excel File</label>
+            <input id="batch-file" name="file" type="file" accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
+          </div>
+          <div>
+            <label for="batch-column">Address Column</label>
+            <input id="batch-column" name="address_column" autocomplete="off" placeholder="address" />
+          </div>
+          <button class="primary" id="batch-submit" type="submit">Resolve File</button>
+          <div class="batch-status" id="batch-status"></div>
+        </form>
       </aside>
     </main>
   </div>
@@ -599,6 +667,12 @@ HTML = """<!doctype html>
     const addStatus = document.getElementById("add-status");
     const updateTrainingButton = document.getElementById("update-training");
     const trainStatus = document.getElementById("train-status");
+    const trainingProgressBar = document.getElementById("training-progress-bar");
+    const batchForm = document.getElementById("batch-form");
+    const batchFile = document.getElementById("batch-file");
+    const batchColumn = document.getElementById("batch-column");
+    const batchSubmit = document.getElementById("batch-submit");
+    const batchStatus = document.getElementById("batch-status");
     let lastResolution = null;
     let trainingPoll = null;
 
@@ -793,6 +867,20 @@ HTML = """<!doctype html>
       trainStatus.textContent = text;
     }
 
+    function setTrainingProgress(value) {
+      const percentValue = Math.max(0, Math.min(100, Math.round(Number(value) || 0)));
+      trainingProgressBar.style.width = `${percentValue}%`;
+    }
+
+    function renderBatchStatus(content, kind = "") {
+      batchStatus.className = `batch-status ${kind}`.trim();
+      if (content instanceof HTMLElement) {
+        batchStatus.replaceChildren(content);
+      } else {
+        batchStatus.textContent = content;
+      }
+    }
+
     function trainingStatusText(data) {
       if (!data || data.state === "idle") {
         return "Idle";
@@ -813,6 +901,7 @@ HTML = """<!doctype html>
       const running = data.state === "running";
       updateTrainingButton.disabled = running;
       updateTrainingButton.textContent = running ? "Training" : "Train Now";
+      setTrainingProgress(data.progress_pct || 0);
       renderTrainStatus(trainingStatusText(data), data.state === "failed" ? "bad" : data.state === "succeeded" ? "ok" : "");
       if (running && !trainingPoll) {
         trainingPoll = window.setInterval(loadTrainingStatus, 5000);
@@ -829,6 +918,7 @@ HTML = """<!doctype html>
     async function startTraining() {
       updateTrainingButton.disabled = true;
       updateTrainingButton.textContent = "Training";
+      setTrainingProgress(4);
       renderTrainStatus("Starting");
       try {
         const response = await fetch("/api/training/start", {
@@ -846,6 +936,50 @@ HTML = """<!doctype html>
         updateTrainingButton.disabled = false;
         updateTrainingButton.textContent = "Train Now";
         renderTrainStatus(error.message || "Training start failed.", "bad");
+      }
+    }
+
+    async function resolveBatch(event) {
+      event.preventDefault();
+      const file = batchFile.files && batchFile.files[0];
+      if (!file) {
+        renderBatchStatus("File is required.", "bad");
+        batchFile.focus();
+        return;
+      }
+
+      batchSubmit.disabled = true;
+      batchSubmit.textContent = "Resolving";
+      renderBatchStatus("Resolving file");
+      try {
+        const formData = new FormData();
+        formData.append("file", file);
+        formData.append("address_column", batchColumn.value.trim());
+        const response = await fetch("/api/batch-resolve", {
+          method: "POST",
+          body: formData
+        });
+        if (!response.ok) {
+          const payload = await response.json().catch(() => ({}));
+          throw new Error(payload.error || "Batch resolve failed.");
+        }
+        const blob = await response.blob();
+        const disposition = response.headers.get("Content-Disposition") || "";
+        const match = disposition.match(/filename="([^"]+)"/);
+        const filename = match ? match[1] : "ady_resolved_addresses.xlsx";
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = filename;
+        link.className = "download-link";
+        link.textContent = `Download ${filename}`;
+        renderBatchStatus(link, "ok");
+        link.click();
+      } catch (error) {
+        renderBatchStatus(error.message || "Batch resolve failed.", "bad");
+      } finally {
+        batchSubmit.disabled = false;
+        batchSubmit.textContent = "Resolve File";
       }
     }
 
@@ -885,6 +1019,7 @@ HTML = """<!doctype html>
     resolveButton.addEventListener("click", resolveAddress);
     addVerifiedButton.addEventListener("click", addVerifiedAddress);
     updateTrainingButton.addEventListener("click", startTraining);
+    batchForm.addEventListener("submit", resolveBatch);
     clearButton.addEventListener("click", () => {
       address.value = "";
       lastResolution = null;
@@ -1083,6 +1218,260 @@ def update_reference_metadata(dataset_dir: Path) -> None:
     path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
 
 
+ADDRESS_COLUMN_NAMES = {
+    "ADDRESS",
+    "INPUT ADDRESS",
+    "RAW ADDRESS",
+    "ORIGINAL ADDRESS",
+    "FULL ADDRESS",
+    "STREET ADDRESS",
+    "MAILING ADDRESS",
+}
+MAX_BATCH_ADDRESSES = 20000
+
+
+def normalize_header(value: str) -> str:
+    return " ".join(normalize_text(value).split())
+
+
+def spreadsheet_column_index(value: str) -> Optional[int]:
+    text = value.strip()
+    if not text:
+        return None
+    if text.isdigit():
+        index = int(text) - 1
+        return index if index >= 0 else None
+    if not re.fullmatch(r"[A-Za-z]{1,3}", text):
+        return None
+    index = 0
+    for char in text.upper():
+        index = index * 26 + (ord(char) - ord("A") + 1)
+    return index - 1
+
+
+def detect_address_column(header: List[str], requested_column: str = "") -> Tuple[int, bool]:
+    if requested_column:
+        requested = normalize_header(requested_column)
+        positional = spreadsheet_column_index(requested_column)
+        if positional is not None:
+            header_value = normalize_header(header[positional]) if positional < len(header) else ""
+            return positional, header_value in ADDRESS_COLUMN_NAMES or header_value.endswith("ADDRESS")
+        for index, value in enumerate(header):
+            if normalize_header(value) == requested:
+                return index, True
+        raise ValueError(f"Address column not found: {requested_column}")
+
+    normalized = [normalize_header(value) for value in header]
+    for index, value in enumerate(normalized):
+        if value in ADDRESS_COLUMN_NAMES or (value.endswith("ADDRESS") and len(value) <= 32):
+            return index, True
+    return 0, False
+
+
+def extract_batch_addresses(rows: List[List[str]], requested_column: str = "") -> List[Tuple[int, str]]:
+    rows = [[str(cell or "").strip() for cell in row] for row in rows if any(str(cell or "").strip() for cell in row)]
+    if not rows:
+        raise ValueError("The uploaded file did not contain any rows.")
+    column_index, has_header = detect_address_column(rows[0], requested_column)
+    start = 1 if has_header else 0
+    extracted: List[Tuple[int, str]] = []
+    for row_offset, row in enumerate(rows[start:], start + 1):
+        value = row[column_index].strip() if column_index < len(row) else ""
+        if value:
+            extracted.append((row_offset, value))
+        if len(extracted) > MAX_BATCH_ADDRESSES:
+            raise ValueError(f"Batch files are limited to {MAX_BATCH_ADDRESSES:,} addresses.")
+    if not extracted:
+        raise ValueError("No addresses were found in the selected column.")
+    return extracted
+
+
+def read_csv_upload(content: bytes) -> List[List[str]]:
+    try:
+        text = content.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        text = content.decode("latin-1")
+    return [row for row in csv.reader(io.StringIO(text))]
+
+
+def xml_local_name(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1]
+
+
+def column_letters_from_cell_ref(cell_ref: str) -> str:
+    return "".join(char for char in cell_ref if char.isalpha())
+
+
+def column_letters_to_index(letters: str) -> int:
+    index = 0
+    for char in letters.upper():
+        index = index * 26 + (ord(char) - ord("A") + 1)
+    return index - 1
+
+
+def worksheet_path_from_workbook(archive: zipfile.ZipFile) -> str:
+    try:
+        workbook = ElementTree.fromstring(archive.read("xl/workbook.xml"))
+        first_sheet = next(element for element in workbook.iter() if xml_local_name(element.tag) == "sheet")
+        relation_id = first_sheet.attrib.get("{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id", "")
+        rels = ElementTree.fromstring(archive.read("xl/_rels/workbook.xml.rels"))
+        for rel in rels:
+            if rel.attrib.get("Id") == relation_id:
+                target = rel.attrib.get("Target", "worksheets/sheet1.xml")
+                return target if target.startswith("xl/") else f"xl/{target.lstrip('/')}"
+    except Exception:
+        pass
+    return "xl/worksheets/sheet1.xml"
+
+
+def read_shared_strings(archive: zipfile.ZipFile) -> List[str]:
+    if "xl/sharedStrings.xml" not in archive.namelist():
+        return []
+    root = ElementTree.fromstring(archive.read("xl/sharedStrings.xml"))
+    values = []
+    for item in root:
+        if xml_local_name(item.tag) != "si":
+            continue
+        values.append("".join(text.text or "" for text in item.iter() if xml_local_name(text.tag) == "t"))
+    return values
+
+
+def read_xlsx_upload(content: bytes) -> List[List[str]]:
+    with zipfile.ZipFile(io.BytesIO(content)) as archive:
+        shared_strings = read_shared_strings(archive)
+        worksheet_path = worksheet_path_from_workbook(archive)
+        root = ElementTree.fromstring(archive.read(worksheet_path))
+        rows: List[List[str]] = []
+        for row_element in root.iter():
+            if xml_local_name(row_element.tag) != "row":
+                continue
+            values: Dict[int, str] = {}
+            for cell in row_element:
+                if xml_local_name(cell.tag) != "c":
+                    continue
+                cell_ref = cell.attrib.get("r", "")
+                column_index = column_letters_to_index(column_letters_from_cell_ref(cell_ref)) if cell_ref else len(values)
+                cell_type = cell.attrib.get("t", "")
+                value = ""
+                if cell_type == "inlineStr":
+                    value = "".join(text.text or "" for text in cell.iter() if xml_local_name(text.tag) == "t")
+                else:
+                    value_node = next((child for child in cell if xml_local_name(child.tag) == "v"), None)
+                    if value_node is not None and value_node.text is not None:
+                        value = value_node.text
+                        if cell_type == "s":
+                            shared_index = int(value)
+                            value = shared_strings[shared_index] if shared_index < len(shared_strings) else ""
+                values[column_index] = value
+            if values:
+                rows.append([values.get(index, "") for index in range(max(values) + 1)])
+        return rows
+
+
+def read_batch_upload(filename: str, content: bytes, requested_column: str = "") -> List[Tuple[int, str]]:
+    suffix = Path(filename.lower()).suffix
+    if suffix == ".xlsx":
+        rows = read_xlsx_upload(content)
+    elif suffix == ".csv" or not suffix:
+        rows = read_csv_upload(content)
+    else:
+        raise ValueError("Upload a .csv or .xlsx file.")
+    return extract_batch_addresses(rows, requested_column)
+
+
+def excel_column_name(index: int) -> str:
+    index += 1
+    letters = ""
+    while index:
+        index, remainder = divmod(index - 1, 26)
+        letters = chr(ord("A") + remainder) + letters
+    return letters
+
+
+def xlsx_cell(ref: str, value: object, style: int = 0) -> str:
+    text = "" if value is None else str(value)
+    style_attr = f' s="{style}"' if style else ""
+    return f'<c r="{ref}" t="inlineStr"{style_attr}><is><t>{xml_escape(text)}</t></is></c>'
+
+
+def write_xlsx_report(headers: List[str], rows: List[List[object]]) -> bytes:
+    worksheet_rows = []
+    all_rows = [headers, *rows]
+    for row_index, row in enumerate(all_rows, 1):
+        cells = []
+        for column_index, value in enumerate(row):
+            ref = f"{excel_column_name(column_index)}{row_index}"
+            cells.append(xlsx_cell(ref, value, style=1 if row_index == 1 else 0))
+        worksheet_rows.append(f'<row r="{row_index}">{"".join(cells)}</row>')
+    sheet_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        '<cols>'
+        '<col min="1" max="1" width="12" customWidth="1"/>'
+        '<col min="2" max="8" width="28" customWidth="1"/>'
+        '<col min="9" max="11" width="36" customWidth="1"/>'
+        '</cols>'
+        f'<sheetData>{"".join(worksheet_rows)}</sheetData>'
+        '</worksheet>'
+    )
+    workbook_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        '<sheets><sheet name="Resolved Addresses" sheetId="1" r:id="rId1"/></sheets>'
+        '</workbook>'
+    )
+    styles_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        '<fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts>'
+        '<fills count="1"><fill><patternFill patternType="none"/></fill></fills>'
+        '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>'
+        '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
+        '<cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'
+        '<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0"/></cellXfs>'
+        '</styleSheet>'
+    )
+    content_types = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+        '<Default Extension="xml" ContentType="application/xml"/>'
+        '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+        '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+        '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>'
+        '</Types>'
+    )
+    root_rels = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
+        '</Relationships>'
+    )
+    workbook_rels = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
+        '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>'
+        '</Relationships>'
+    )
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("[Content_Types].xml", content_types)
+        archive.writestr("_rels/.rels", root_rels)
+        archive.writestr("xl/workbook.xml", workbook_xml)
+        archive.writestr("xl/_rels/workbook.xml.rels", workbook_rels)
+        archive.writestr("xl/styles.xml", styles_xml)
+        archive.writestr("xl/worksheets/sheet1.xml", sheet_xml)
+    return output.getvalue()
+
+
+def batch_report_filename(filename: str) -> str:
+    stem = Path(filename).stem or "addresses"
+    safe_stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", stem).strip("._") or "addresses"
+    return f"{safe_stem}_resolved.xlsx"
+
+
 class ResolverService:
     def __init__(
         self,
@@ -1108,6 +1497,8 @@ class ResolverService:
             "queued_at": "",
             "queue_reason": "",
             "log_tail": [],
+            "progress_pct": 0,
+            "phase": "Idle",
         }
         reference_rows, _ = load_reference(dataset_dir / "reference_addresses.csv")
         city_lookup = build_city_lookup(reference_rows)
@@ -1150,6 +1541,52 @@ class ResolverService:
             "stage1": self.resolution_summary(stage1),
             "stage2": self.resolution_summary(stage2),
         }
+
+    def resolve_batch(self, filename: str, content: bytes, address_column: str = "") -> Tuple[str, bytes, int]:
+        addresses = read_batch_upload(filename, content, address_column)
+        headers = [
+            "source_row",
+            "original_address",
+            "standardized_address",
+            "resolved_address",
+            "confidence",
+            "needs_review",
+            "match_id",
+            "stage",
+            "top_candidate_1",
+            "top_candidate_1_score",
+            "top_candidate_2",
+            "top_candidate_2_score",
+            "top_candidate_3",
+            "top_candidate_3_score",
+        ]
+        report_rows: List[List[object]] = []
+        for source_row, raw_address in addresses:
+            resolution = self.resolve(raw_address)
+            candidates = list(resolution.get("top_candidates") or [])
+            row: List[object] = [
+                source_row,
+                raw_address,
+                resolution.get("standardized_address", ""),
+                resolution.get("predicted_canonical_address", ""),
+                f"{float(resolution.get('confidence') or 0.0):.4f}",
+                "yes" if resolution.get("needs_review") else "no",
+                resolution.get("predicted_match_id", ""),
+                resolution.get("stage", ""),
+            ]
+            for index in range(3):
+                if index < len(candidates):
+                    candidate = candidates[index]
+                    row.extend(
+                        [
+                            candidate.get("canonical_address", ""),
+                            f"{float(candidate.get('score') or 0.0):.4f}",
+                        ]
+                    )
+                else:
+                    row.extend(["", ""])
+            report_rows.append(row)
+        return batch_report_filename(filename), write_xlsx_report(headers, report_rows), len(report_rows)
 
     def feedback_override(self, raw_address: str, standardized_address: str) -> Optional[Dict[str, object]]:
         reference_id = ""
@@ -1446,6 +1883,22 @@ class ResolverService:
         with self.training_lock:
             status = dict(self.training_job)
             status["log_tail"] = list(status.get("log_tail", []))
+            if status.get("state") == "running":
+                started_at = str(status.get("started_at") or "")
+                elapsed_seconds = 0.0
+                if started_at:
+                    try:
+                        elapsed_seconds = max(
+                            0.0,
+                            (
+                                datetime.now(timezone.utc)
+                                - datetime.fromisoformat(started_at)
+                            ).total_seconds(),
+                        )
+                    except ValueError:
+                        elapsed_seconds = 0.0
+                estimated = min(92, 6 + int(elapsed_seconds / 3))
+                status["progress_pct"] = max(int(status.get("progress_pct") or 0), estimated)
         status["train_dataset_dir"] = str(self.train_dataset_dir)
         status["eval_dataset_dir"] = str(self.eval_dataset_dir)
         status["feedback_path"] = str(active_learning_feedback_csv_path())
@@ -1505,6 +1958,8 @@ class ResolverService:
                 "returncode": None,
                 "log_tail": [],
                 "evaluation": {},
+                "progress_pct": 4,
+                "phase": "Starting",
             }
             thread = threading.Thread(
                 target=self.run_training_job,
@@ -1545,6 +2000,18 @@ class ResolverService:
             log_tail = list(self.training_job.get("log_tail", []))
             log_tail.append(line.rstrip())
             self.training_job["log_tail"] = log_tail[-40:]
+            lowered = line.lower()
+            progress = int(self.training_job.get("progress_pct") or 0)
+            if "loaded" in lowered and "feedback" in lowered:
+                progress = max(progress, 18)
+                self.training_job["phase"] = "Loading feedback"
+            elif "saved stage 2 model" in lowered:
+                progress = max(progress, 70)
+                self.training_job["phase"] = "Evaluating"
+            elif "address resolver finished" in lowered:
+                progress = max(progress, 94)
+                self.training_job["phase"] = "Finalizing"
+            self.training_job["progress_pct"] = progress
 
     def reload_model(self) -> None:
         model, accept_threshold, review_threshold, metadata = load_model(self.model_path, self.resolver)
@@ -1609,6 +2076,8 @@ class ResolverService:
                 self.training_job["queued"] = False
                 self.training_job["queued_at"] = ""
                 self.training_job["queue_reason"] = ""
+                self.training_job["progress_pct"] = 100 if state == "succeeded" else int(self.training_job.get("progress_pct") or 0)
+                self.training_job["phase"] = "Complete" if state == "succeeded" else "Failed"
             if queued_reason:
                 self.queue_training(queued_reason)
 
@@ -1848,6 +2317,9 @@ class ResolverRequestHandler(BaseHTTPRequestHandler):
         if route == "/api/training/start":
             self.start_training()
             return
+        if route == "/api/batch-resolve":
+            self.batch_resolve()
+            return
         if route != "/api/resolve":
             self.send_json({"error": "Not found"}, status=HTTPStatus.NOT_FOUND)
             return
@@ -1864,12 +2336,91 @@ class ResolverRequestHandler(BaseHTTPRequestHandler):
         except Exception as exc:  # pragma: no cover - returned to local UI
             self.send_json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
 
+    def parse_multipart_form(self) -> Dict[str, object]:
+        content_type = self.headers.get("Content-Type", "")
+        marker = "boundary="
+        if marker not in content_type:
+            raise ValueError("Expected multipart form data.")
+        boundary = content_type.split(marker, 1)[1].split(";", 1)[0].strip().strip('"')
+        if not boundary:
+            raise ValueError("Multipart boundary is missing.")
+        length = int(self.headers.get("Content-Length", "0"))
+        if length <= 0:
+            raise ValueError("Request body is empty.")
+        if length > 32 * 1024 * 1024:
+            raise ValueError("Upload is too large. Use a file under 32 MB.")
+
+        body = self.rfile.read(length)
+        delimiter = b"--" + boundary.encode("utf-8")
+        form: Dict[str, object] = {}
+        for raw_part in body.split(delimiter):
+            part = raw_part
+            if part.startswith(b"\r\n"):
+                part = part[2:]
+            if part.endswith(b"--"):
+                part = part[:-2]
+            if part.endswith(b"\r\n"):
+                part = part[:-2]
+            if not part or part == b"--":
+                continue
+            if b"\r\n\r\n" not in part:
+                continue
+            raw_headers, content = part.split(b"\r\n\r\n", 1)
+            headers = raw_headers.decode("utf-8", errors="replace").split("\r\n")
+            disposition = ""
+            for header in headers:
+                name, _, value = header.partition(":")
+                if name.lower() == "content-disposition":
+                    disposition = value.strip()
+                    break
+            if not disposition:
+                continue
+            fields: Dict[str, str] = {}
+            for segment in disposition.split(";"):
+                key, separator, value = segment.strip().partition("=")
+                if separator:
+                    fields[key] = value.strip().strip('"')
+            name = fields.get("name", "")
+            filename = fields.get("filename")
+            if not name:
+                continue
+            if filename is not None:
+                form[name] = {"filename": filename, "content": content}
+            else:
+                form[name] = content.decode("utf-8", errors="replace").strip()
+        return form
+
     def start_training(self) -> None:
         try:
             self.read_json_body()
             self.send_json(self.service.start_training())
         except json.JSONDecodeError:
             self.send_json({"error": "Request body must be JSON."}, status=HTTPStatus.BAD_REQUEST)
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+        except Exception as exc:  # pragma: no cover - returned to local UI
+            self.send_json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    def batch_resolve(self) -> None:
+        try:
+            form = self.parse_multipart_form()
+            uploaded = form.get("file")
+            if not isinstance(uploaded, dict):
+                self.send_json({"error": "File is required."}, status=HTTPStatus.BAD_REQUEST)
+                return
+            filename = str(uploaded.get("filename") or "addresses.csv")
+            content = uploaded.get("content")
+            if not isinstance(content, bytes) or not content:
+                self.send_json({"error": "Uploaded file is empty."}, status=HTTPStatus.BAD_REQUEST)
+                return
+            address_column = str(form.get("address_column") or "")
+            output_filename, workbook, row_count = self.service.resolve_batch(filename, content, address_column)
+            self.send_bytes(
+                workbook,
+                content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                filename=output_filename,
+                extra_headers={"X-Ady-Resolved-Rows": str(row_count)},
+            )
         except ValueError as exc:
             self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
         except Exception as exc:  # pragma: no cover - returned to local UI
@@ -1925,6 +2476,22 @@ class ResolverRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(encoded)))
         self.end_headers()
         self.wfile.write(encoded)
+
+    def send_bytes(
+        self,
+        payload: bytes,
+        content_type: str,
+        filename: str,
+        extra_headers: Optional[Dict[str, str]] = None,
+    ) -> None:
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        for name, value in (extra_headers or {}).items():
+            self.send_header(name, value)
+        self.end_headers()
+        self.wfile.write(payload)
 
 
 def parse_args() -> argparse.Namespace:
