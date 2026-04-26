@@ -1052,6 +1052,27 @@ class Resolver:
             True,
         )
 
+    def prefix_city_choice(self, candidate: str, city_choices: Sequence[str], state: str = "") -> Tuple[str, float, float]:
+        if len(candidate) < 5 or " " in candidate:
+            return "", 0.0, 0.0
+        matches = [city for city in city_choices if len(city) > len(candidate) and city.startswith(candidate)]
+        if not matches:
+            return "", 0.0, 0.0
+
+        def city_count(city: str) -> int:
+            if state:
+                return self.city_counts_by_state[state][city]
+            return sum(state_counts[city] for state_counts in self.city_counts_by_state.values())
+
+        scored = sorted(((city_count(city), city) for city in matches), reverse=True)
+        best_count, best_city = scored[0]
+        second_count = scored[1][0] if len(scored) > 1 else 0
+        if len(scored) > 1 and best_count < max(20, second_count * 2):
+            return "", 0.0, 0.0
+        score = min(0.95, 0.86 + 0.02 * min(4, len(candidate) - 4))
+        second_score = min(score - 0.10, sequence_similarity(candidate, scored[1][1])) if len(scored) > 1 else 0.0
+        return best_city, score, max(0.0, second_score)
+
     def street_tokens_for_reparse(self, parsed: ParsedAddress) -> List[str]:
         tokens: List[str] = []
         if parsed.predir:
@@ -1092,7 +1113,9 @@ class Resolver:
                     minimum_score = 0.62 if width == 1 else 0.60
                 else:
                     minimum_score = 0.80 if width == 1 else 0.76
-                city_match, best_score, second_score = closest_choice(candidate, city_choices, minimum_score=minimum_score)
+                city_match, best_score, second_score = self.prefix_city_choice(candidate, city_choices, parsed.state)
+                if not city_match:
+                    city_match, best_score, second_score = closest_choice(candidate, city_choices, minimum_score=minimum_score)
                 required_margin = 0.08 if allow_global_city_match else 0.05
                 if not city_match or (best_score - second_score < required_margin and best_score < 0.90):
                     continue
@@ -1159,7 +1182,9 @@ class Resolver:
                 minimum_score = 0.62 if width == 1 else 0.60
             else:
                 minimum_score = 0.80 if width == 1 else 0.76
-            city_match, best_score, second_score = closest_choice(candidate, city_choices, minimum_score=minimum_score)
+            city_match, best_score, second_score = self.prefix_city_choice(candidate, city_choices, parsed.state)
+            if not city_match:
+                city_match, best_score, second_score = closest_choice(candidate, city_choices, minimum_score=minimum_score)
             required_margin = 0.08 if allow_global_city_match else 0.05 if street_context else 0.04
             if not city_match or (best_score - second_score < required_margin and best_score < 0.90):
                 continue
@@ -1317,7 +1342,10 @@ class Resolver:
         parsed_core = parsed.street_core_signature or parsed.street_name
         for candidate_id in candidate_ids:
             candidate = self.reference_by_id[candidate_id]
-            street_sim = cheap_similarity(parsed.street_name, candidate.street_name)
+            street_sim = max(
+                cheap_similarity(parsed.street_name, candidate.street_name),
+                sequence_similarity(parsed.street_name, candidate.street_name),
+            )
             core_overlap = token_overlap(parsed_core, " ".join(bit for bit in [candidate.predir, candidate.street_name, candidate.suffixdir] if bit))
             type_score = 1.0 if not parsed.street_type or parsed.street_type == candidate.street_type else 0.0
             locality_score = 1.0
@@ -1335,7 +1363,10 @@ class Resolver:
         second_score = scored[1][0] if len(scored) > 1 else 0.0
         if strong_locality:
             best = self.reference_by_id[best_id]
-            street_sim = cheap_similarity(parsed.street_name, best.street_name)
+            street_sim = max(
+                cheap_similarity(parsed.street_name, best.street_name),
+                sequence_similarity(parsed.street_name, best.street_name),
+            )
             type_ok = not parsed.street_type or parsed.street_type == best.street_type
             if street_sim >= 0.62 and type_ok and best_score - second_score >= 0.16:
                 return best_id

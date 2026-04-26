@@ -221,7 +221,8 @@ HTML = """<!doctype html>
     }
 
     textarea,
-    input {
+    input,
+    select {
       width: 100%;
       border: 1px solid var(--line-strong);
       border-radius: 8px;
@@ -242,12 +243,14 @@ HTML = """<!doctype html>
       resize: vertical;
     }
 
-    input {
+    input,
+    select {
       min-height: 44px;
     }
 
     textarea:focus,
-    input:focus {
+    input:focus,
+    select:focus {
       border-color: var(--accent);
       box-shadow: 0 0 0 3px rgba(45, 212, 191, 0.16);
     }
@@ -403,6 +406,13 @@ HTML = """<!doctype html>
     .add-form textarea {
       min-height: 74px;
       font-size: 14px;
+    }
+
+    .add-import {
+      border-top: 1px solid var(--line);
+      padding-top: 10px;
+      display: grid;
+      gap: 10px;
     }
 
     .add-status {
@@ -627,6 +637,19 @@ HTML = """<!doctype html>
             <input id="source-note" autocomplete="off" placeholder="public listing, county site, USPS lookup" />
           </div>
           <button class="primary" id="add-verified">Add</button>
+          <div class="add-import">
+            <div>
+              <label for="add-verified-file">CSV or Excel File</label>
+              <input id="add-verified-file" name="file" type="file" accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
+            </div>
+            <div>
+              <label for="add-verified-column">Address Column</label>
+              <select id="add-verified-column" name="address_column" disabled>
+                <option value="">Choose a file first</option>
+              </select>
+            </div>
+            <button class="primary" id="import-verified">Import Verified</button>
+          </div>
           <div class="add-status" id="add-status"></div>
         </div>
         <h2>Training</h2>
@@ -644,8 +667,16 @@ HTML = """<!doctype html>
             <input id="batch-file" name="file" type="file" accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
           </div>
           <div>
-            <label for="batch-column">Address Column</label>
-            <input id="batch-column" name="address_column" autocomplete="off" placeholder="address" />
+            <label for="batch-address-column">Address Column</label>
+            <select id="batch-address-column" name="address_column" disabled>
+              <option value="">Choose a file first</option>
+            </select>
+          </div>
+          <div>
+            <label for="batch-id-column">ID Column</label>
+            <select id="batch-id-column" name="id_column" disabled>
+              <option value="">No ID column</option>
+            </select>
           </div>
           <button class="primary" id="batch-submit" type="submit">Resolve File</button>
           <div class="batch-status" id="batch-status"></div>
@@ -664,17 +695,23 @@ HTML = """<!doctype html>
     const addAddress = document.getElementById("add-address");
     const sourceNote = document.getElementById("source-note");
     const addVerifiedButton = document.getElementById("add-verified");
+    const addVerifiedFile = document.getElementById("add-verified-file");
+    const addVerifiedColumn = document.getElementById("add-verified-column");
+    const importVerifiedButton = document.getElementById("import-verified");
     const addStatus = document.getElementById("add-status");
     const updateTrainingButton = document.getElementById("update-training");
     const trainStatus = document.getElementById("train-status");
     const trainingProgressBar = document.getElementById("training-progress-bar");
     const batchForm = document.getElementById("batch-form");
     const batchFile = document.getElementById("batch-file");
-    const batchColumn = document.getElementById("batch-column");
+    const batchAddressColumn = document.getElementById("batch-address-column");
+    const batchIdColumn = document.getElementById("batch-id-column");
     const batchSubmit = document.getElementById("batch-submit");
     const batchStatus = document.getElementById("batch-status");
     let lastResolution = null;
     let trainingPoll = null;
+    let batchHasHeader = null;
+    let addVerifiedHasHeader = null;
 
     function escapeHtml(value) {
       return String(value ?? "").replace(/[&<>"']/g, ch => ({
@@ -862,6 +899,57 @@ HTML = """<!doctype html>
       addStatus.textContent = text;
     }
 
+    function resetAddVerifiedColumns(message = "Choose a file first") {
+      addVerifiedHasHeader = null;
+      addVerifiedColumn.replaceChildren(new Option(message, ""));
+      addVerifiedColumn.disabled = true;
+    }
+
+    function populateAddVerifiedColumns(data) {
+      const columns = data.columns || [];
+      addVerifiedHasHeader = Boolean(data.has_header);
+      addVerifiedColumn.replaceChildren();
+      if (!columns.length) {
+        resetAddVerifiedColumns("No columns found");
+        return;
+      }
+      columns.forEach(column => {
+        addVerifiedColumn.add(new Option(columnLabel(column), column.value));
+      });
+      if (data.guessed_address_column) {
+        addVerifiedColumn.value = data.guessed_address_column;
+      }
+      addVerifiedColumn.disabled = false;
+    }
+
+    async function loadAddVerifiedColumns() {
+      const file = addVerifiedFile.files && addVerifiedFile.files[0];
+      resetAddVerifiedColumns("Inspecting file");
+      if (!file) {
+        renderAddStatus("");
+        resetAddVerifiedColumns();
+        return;
+      }
+      renderAddStatus("Reading columns");
+      try {
+        const formData = new FormData();
+        formData.append("file", file);
+        const response = await fetch("/api/batch-columns", {
+          method: "POST",
+          body: formData
+        });
+        const payload = await response.json();
+        if (!response.ok) {
+          throw new Error(payload.error || "Column read failed.");
+        }
+        populateAddVerifiedColumns(payload);
+        renderAddStatus(`${payload.columns.length} columns found`, "ok");
+      } catch (error) {
+        resetAddVerifiedColumns("Column read failed");
+        renderAddStatus(error.message || "Column read failed.", "bad");
+      }
+    }
+
     function renderTrainStatus(text, kind = "") {
       trainStatus.className = `train-status ${kind}`.trim();
       trainStatus.textContent = text;
@@ -878,6 +966,71 @@ HTML = """<!doctype html>
         batchStatus.replaceChildren(content);
       } else {
         batchStatus.textContent = content;
+      }
+    }
+
+    function resetBatchColumns(message = "Choose a file first") {
+      batchHasHeader = null;
+      batchAddressColumn.replaceChildren(new Option(message, ""));
+      batchAddressColumn.disabled = true;
+      batchIdColumn.replaceChildren(new Option("No ID column", ""));
+      batchIdColumn.disabled = true;
+    }
+
+    function columnLabel(column) {
+      const name = column.name ? `${column.name} ` : "";
+      const preview = column.preview ? ` - ${column.preview}` : "";
+      return `${name}(${column.letter})${preview}`;
+    }
+
+    function populateBatchColumns(data) {
+      const columns = data.columns || [];
+      batchHasHeader = Boolean(data.has_header);
+      batchAddressColumn.replaceChildren();
+      batchIdColumn.replaceChildren(new Option("No ID column", ""));
+      if (!columns.length) {
+        resetBatchColumns("No columns found");
+        return;
+      }
+      columns.forEach(column => {
+        batchAddressColumn.add(new Option(columnLabel(column), column.value));
+        batchIdColumn.add(new Option(columnLabel(column), column.value));
+      });
+      if (data.guessed_address_column) {
+        batchAddressColumn.value = data.guessed_address_column;
+      }
+      if (data.guessed_id_column) {
+        batchIdColumn.value = data.guessed_id_column;
+      }
+      batchAddressColumn.disabled = false;
+      batchIdColumn.disabled = false;
+    }
+
+    async function loadBatchColumns() {
+      const file = batchFile.files && batchFile.files[0];
+      resetBatchColumns("Inspecting file");
+      if (!file) {
+        renderBatchStatus("");
+        resetBatchColumns();
+        return;
+      }
+      renderBatchStatus("Reading columns");
+      try {
+        const formData = new FormData();
+        formData.append("file", file);
+        const response = await fetch("/api/batch-columns", {
+          method: "POST",
+          body: formData
+        });
+        const payload = await response.json();
+        if (!response.ok) {
+          throw new Error(payload.error || "Column read failed.");
+        }
+        populateBatchColumns(payload);
+        renderBatchStatus(`${payload.columns.length} columns found`, "ok");
+      } catch (error) {
+        resetBatchColumns("Column read failed");
+        renderBatchStatus(error.message || "Column read failed.", "bad");
       }
     }
 
@@ -947,6 +1100,11 @@ HTML = """<!doctype html>
         batchFile.focus();
         return;
       }
+      if (!batchAddressColumn.value) {
+        renderBatchStatus("Choose the address column.", "bad");
+        batchAddressColumn.focus();
+        return;
+      }
 
       batchSubmit.disabled = true;
       batchSubmit.textContent = "Resolving";
@@ -954,7 +1112,11 @@ HTML = """<!doctype html>
       try {
         const formData = new FormData();
         formData.append("file", file);
-        formData.append("address_column", batchColumn.value.trim());
+        formData.append("address_column", batchAddressColumn.value);
+        formData.append("id_column", batchIdColumn.value);
+        if (batchHasHeader !== null) {
+          formData.append("has_header", batchHasHeader ? "1" : "0");
+        }
         const response = await fetch("/api/batch-resolve", {
           method: "POST",
           body: formData
@@ -1016,10 +1178,56 @@ HTML = """<!doctype html>
       }
     }
 
+    async function importVerifiedAddresses() {
+      const file = addVerifiedFile.files && addVerifiedFile.files[0];
+      if (!file) {
+        renderAddStatus("File is required.", "bad");
+        addVerifiedFile.focus();
+        return;
+      }
+      if (!addVerifiedColumn.value) {
+        renderAddStatus("Choose the address column.", "bad");
+        addVerifiedColumn.focus();
+        return;
+      }
+
+      importVerifiedButton.disabled = true;
+      importVerifiedButton.textContent = "Importing";
+      renderAddStatus("Importing verified addresses");
+      try {
+        const formData = new FormData();
+        formData.append("file", file);
+        formData.append("address_column", addVerifiedColumn.value);
+        formData.append("source_note", sourceNote.value.trim());
+        if (addVerifiedHasHeader !== null) {
+          formData.append("has_header", addVerifiedHasHeader ? "1" : "0");
+        }
+        const response = await fetch("/api/add-addresses", {
+          method: "POST",
+          body: formData
+        });
+        const payload = await response.json();
+        if (!response.ok) {
+          throw new Error(payload.error || "Import failed.");
+        }
+        const failedText = payload.failed_count ? `, ${payload.failed_count} failed` : "";
+        renderAddStatus(`Imported ${payload.added_count} new, ${payload.existing_count} already existed${failedText}.`, payload.failed_count ? "bad" : "ok");
+        await loadHealth();
+      } catch (error) {
+        renderAddStatus(error.message || "Import failed.", "bad");
+      } finally {
+        importVerifiedButton.disabled = false;
+        importVerifiedButton.textContent = "Import Verified";
+      }
+    }
+
     resolveButton.addEventListener("click", resolveAddress);
     addVerifiedButton.addEventListener("click", addVerifiedAddress);
+    importVerifiedButton.addEventListener("click", importVerifiedAddresses);
+    addVerifiedFile.addEventListener("change", loadAddVerifiedColumns);
     updateTrainingButton.addEventListener("click", startTraining);
     batchForm.addEventListener("submit", resolveBatch);
+    batchFile.addEventListener("change", loadBatchColumns);
     clearButton.addEventListener("click", () => {
       address.value = "";
       lastResolution = null;
@@ -1181,7 +1389,9 @@ def append_reference_record(dataset_dir: Path, reference: ReferenceAddress) -> N
         writer.writerow(reference_csv_row(reference))
 
 
-def update_reference_metadata(dataset_dir: Path) -> None:
+def update_reference_metadata(dataset_dir: Path, increment: int = 1) -> None:
+    if increment <= 0:
+        return
     path = dataset_dir / "metadata.json"
     if not path.exists():
         return
@@ -1190,7 +1400,7 @@ def update_reference_metadata(dataset_dir: Path) -> None:
     except json.JSONDecodeError:
         return
     for key in ("rows_seen", "rows_loaded", "reference_records"):
-        metadata[key] = int(metadata.get(key, 0)) + 1
+        metadata[key] = int(metadata.get(key, 0)) + increment
     sources = metadata.setdefault("sources", [])
     manual_source = None
     for source in sources:
@@ -1207,8 +1417,8 @@ def update_reference_metadata(dataset_dir: Path) -> None:
             "input_paths": [str(manual_verified_csv_path())],
         }
         sources.append(manual_source)
-    manual_source["rows_seen"] = int(manual_source.get("rows_seen", 0)) + 1
-    manual_source["rows_loaded"] = int(manual_source.get("rows_loaded", 0)) + 1
+    manual_source["rows_seen"] = int(manual_source.get("rows_seen", 0)) + increment
+    manual_source["rows_loaded"] = int(manual_source.get("rows_loaded", 0)) + increment
     if "source_format" in metadata and "address_record" not in str(metadata["source_format"]).split("+"):
         metadata["source_format"] = f"{metadata['source_format']}+address_record"
     input_paths = metadata.setdefault("input_paths", [])
@@ -1220,18 +1430,42 @@ def update_reference_metadata(dataset_dir: Path) -> None:
 
 ADDRESS_COLUMN_NAMES = {
     "ADDRESS",
+    "ADDR",
+    "ADDR1",
+    "ADDRESS1",
     "INPUT ADDRESS",
+    "INPUT",
     "RAW ADDRESS",
     "ORIGINAL ADDRESS",
     "FULL ADDRESS",
     "STREET ADDRESS",
     "MAILING ADDRESS",
+    "PHYSICAL ADDRESS",
+    "PROPERTY ADDRESS",
+    "SITUS ADDRESS",
+    "SITE ADDRESS",
+    "LOCATION",
+}
+ID_COLUMN_NAMES = {
+    "ID",
+    "RECORD ID",
+    "SOURCE ID",
+    "ROW ID",
+    "CUSTOMER ID",
+    "ACCOUNT ID",
+    "PARCEL ID",
+    "PARCEL",
+    "PID",
+    "APN",
+    "OBJECT ID",
+    "OBJECTID",
+    "FID",
 }
 MAX_BATCH_ADDRESSES = 20000
 
 
 def normalize_header(value: str) -> str:
-    return " ".join(normalize_text(value).split())
+    return " ".join(normalize_text(re.sub(r"[_/-]+", " ", value)).split())
 
 
 def spreadsheet_column_index(value: str) -> Optional[int]:
@@ -1249,36 +1483,86 @@ def spreadsheet_column_index(value: str) -> Optional[int]:
     return index - 1
 
 
-def detect_address_column(header: List[str], requested_column: str = "") -> Tuple[int, bool]:
+def column_matches_name(value: str, names: set[str], suffix: str = "") -> bool:
+    normalized = normalize_header(value)
+    if not normalized:
+        return False
+    if normalized in names:
+        return True
+    return bool(suffix and normalized.endswith(suffix) and len(normalized) <= 40)
+
+
+def looks_like_header_row(row: List[str]) -> bool:
+    return any(
+        column_matches_name(value, ADDRESS_COLUMN_NAMES, "ADDRESS") or column_matches_name(value, ID_COLUMN_NAMES)
+        for value in row
+    )
+
+
+def detect_data_column(
+    header: List[str],
+    requested_column: str = "",
+    names: Optional[set[str]] = None,
+    suffix: str = "",
+    fallback_index: int = 0,
+    label: str = "Column",
+) -> Tuple[int, bool]:
+    names = names or set()
     if requested_column:
         requested = normalize_header(requested_column)
+        if len(requested) > 1:
+            for index, value in enumerate(header):
+                if normalize_header(value) == requested:
+                    return index, True
         positional = spreadsheet_column_index(requested_column)
         if positional is not None:
-            header_value = normalize_header(header[positional]) if positional < len(header) else ""
-            return positional, header_value in ADDRESS_COLUMN_NAMES or header_value.endswith("ADDRESS")
+            header_value = header[positional] if positional < len(header) else ""
+            return positional, column_matches_name(header_value, names, suffix)
         for index, value in enumerate(header):
             if normalize_header(value) == requested:
                 return index, True
-        raise ValueError(f"Address column not found: {requested_column}")
+        raise ValueError(f"{label} not found: {requested_column}")
 
     normalized = [normalize_header(value) for value in header]
     for index, value in enumerate(normalized):
-        if value in ADDRESS_COLUMN_NAMES or (value.endswith("ADDRESS") and len(value) <= 32):
+        if value in names or (suffix and value.endswith(suffix) and len(value) <= 40):
             return index, True
-    return 0, False
+    return fallback_index, False
 
 
-def extract_batch_addresses(rows: List[List[str]], requested_column: str = "") -> List[Tuple[int, str]]:
+def detect_address_column(header: List[str], requested_column: str = "") -> Tuple[int, bool]:
+    return detect_data_column(header, requested_column, ADDRESS_COLUMN_NAMES, "ADDRESS", 0, "Address column")
+
+
+def detect_id_column(header: List[str], requested_column: str = "") -> Tuple[Optional[int], bool]:
+    if not requested_column:
+        for index, value in enumerate(header):
+            if column_matches_name(value, ID_COLUMN_NAMES):
+                return index, True
+        return None, False
+    index, has_header = detect_data_column(header, requested_column, ID_COLUMN_NAMES, "", 0, "ID column")
+    return index, has_header
+
+
+def extract_batch_addresses(
+    rows: List[List[str]],
+    requested_column: str = "",
+    requested_id_column: str = "",
+    has_header: Optional[bool] = None,
+) -> List[Tuple[int, str, str]]:
     rows = [[str(cell or "").strip() for cell in row] for row in rows if any(str(cell or "").strip() for cell in row)]
     if not rows:
         raise ValueError("The uploaded file did not contain any rows.")
-    column_index, has_header = detect_address_column(rows[0], requested_column)
-    start = 1 if has_header else 0
-    extracted: List[Tuple[int, str]] = []
+    column_index, address_has_header = detect_address_column(rows[0], requested_column)
+    id_index, id_has_header = detect_id_column(rows[0], requested_id_column)
+    header_present = looks_like_header_row(rows[0]) if has_header is None else has_header
+    start = 1 if (header_present or address_has_header or id_has_header) else 0
+    extracted: List[Tuple[int, str, str]] = []
     for row_offset, row in enumerate(rows[start:], start + 1):
         value = row[column_index].strip() if column_index < len(row) else ""
         if value:
-            extracted.append((row_offset, value))
+            source_id = row[id_index].strip() if id_index is not None and id_index < len(row) else ""
+            extracted.append((row_offset, source_id, value))
         if len(extracted) > MAX_BATCH_ADDRESSES:
             raise ValueError(f"Batch files are limited to {MAX_BATCH_ADDRESSES:,} addresses.")
     if not extracted:
@@ -1368,15 +1652,62 @@ def read_xlsx_upload(content: bytes) -> List[List[str]]:
         return rows
 
 
-def read_batch_upload(filename: str, content: bytes, requested_column: str = "") -> List[Tuple[int, str]]:
+def read_upload_rows(filename: str, content: bytes) -> List[List[str]]:
     suffix = Path(filename.lower()).suffix
     if suffix == ".xlsx":
-        rows = read_xlsx_upload(content)
+        return read_xlsx_upload(content)
     elif suffix == ".csv" or not suffix:
-        rows = read_csv_upload(content)
-    else:
-        raise ValueError("Upload a .csv or .xlsx file.")
-    return extract_batch_addresses(rows, requested_column)
+        return read_csv_upload(content)
+    raise ValueError("Upload a .csv or .xlsx file.")
+
+
+def inspect_batch_columns(filename: str, content: bytes) -> Dict[str, object]:
+    rows = [[str(cell or "").strip() for cell in row] for row in read_upload_rows(filename, content)]
+    rows = [row for row in rows if any(row)]
+    if not rows:
+        raise ValueError("The uploaded file did not contain any rows.")
+    has_header = looks_like_header_row(rows[0])
+    header = rows[0]
+    data_start = 1 if has_header else 0
+    max_columns = max(len(row) for row in rows[:25])
+    address_index, _ = detect_address_column(header)
+    id_index, _ = detect_id_column(header)
+    columns: List[Dict[str, object]] = []
+    for index in range(max_columns):
+        letter = excel_column_name(index)
+        name = header[index] if has_header and index < len(header) else ""
+        preview = ""
+        for row in rows[data_start : data_start + 10]:
+            if index < len(row) and row[index]:
+                preview = row[index]
+                break
+        if len(preview) > 52:
+            preview = preview[:49].rstrip() + "..."
+        columns.append(
+            {
+                "value": letter,
+                "letter": letter,
+                "name": name,
+                "preview": preview,
+                "index": index,
+            }
+        )
+    return {
+        "columns": columns,
+        "has_header": has_header,
+        "guessed_address_column": excel_column_name(address_index) if address_index is not None and address_index < max_columns else "",
+        "guessed_id_column": excel_column_name(id_index) if id_index is not None and id_index < max_columns else "",
+    }
+
+
+def read_batch_upload(
+    filename: str,
+    content: bytes,
+    requested_column: str = "",
+    requested_id_column: str = "",
+    has_header: Optional[bool] = None,
+) -> List[Tuple[int, str, str]]:
+    return extract_batch_addresses(read_upload_rows(filename, content), requested_column, requested_id_column, has_header)
 
 
 def excel_column_name(index: int) -> str:
@@ -1408,8 +1739,8 @@ def write_xlsx_report(headers: List[str], rows: List[List[object]]) -> bytes:
         '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
         '<cols>'
         '<col min="1" max="1" width="12" customWidth="1"/>'
-        '<col min="2" max="8" width="28" customWidth="1"/>'
-        '<col min="9" max="11" width="36" customWidth="1"/>'
+        '<col min="2" max="9" width="28" customWidth="1"/>'
+        '<col min="10" max="15" width="36" customWidth="1"/>'
         '</cols>'
         f'<sheetData>{"".join(worksheet_rows)}</sheetData>'
         '</worksheet>'
@@ -1542,10 +1873,18 @@ class ResolverService:
             "stage2": self.resolution_summary(stage2),
         }
 
-    def resolve_batch(self, filename: str, content: bytes, address_column: str = "") -> Tuple[str, bytes, int]:
-        addresses = read_batch_upload(filename, content, address_column)
+    def resolve_batch(
+        self,
+        filename: str,
+        content: bytes,
+        address_column: str = "",
+        id_column: str = "",
+        has_header: Optional[bool] = None,
+    ) -> Tuple[str, bytes, int]:
+        addresses = read_batch_upload(filename, content, address_column, id_column, has_header)
         headers = [
             "source_row",
+            "source_id",
             "original_address",
             "standardized_address",
             "resolved_address",
@@ -1561,11 +1900,12 @@ class ResolverService:
             "top_candidate_3_score",
         ]
         report_rows: List[List[object]] = []
-        for source_row, raw_address in addresses:
+        for source_row, source_id, raw_address in addresses:
             resolution = self.resolve(raw_address)
             candidates = list(resolution.get("top_candidates") or [])
             row: List[object] = [
                 source_row,
+                source_id,
                 raw_address,
                 resolution.get("standardized_address", ""),
                 resolution.get("predicted_canonical_address", ""),
@@ -1811,6 +2151,78 @@ class ResolverService:
             "already_exists": False,
             "reference_id": reference.address_id,
             "canonical_address": reference.canonical_address,
+            "reference_count": self.reference_count,
+        }
+
+    def import_verified_addresses(
+        self,
+        filename: str,
+        content: bytes,
+        address_column: str = "",
+        source_note: str = "",
+        has_header: Optional[bool] = None,
+    ) -> Dict[str, object]:
+        addresses = read_batch_upload(filename, content, address_column, "", has_header)
+        added: List[Dict[str, object]] = []
+        existing: List[Dict[str, object]] = []
+        failures: List[Dict[str, object]] = []
+        manual_number = int(self.next_manual_id().removeprefix("MANUAL_MS_"))
+        file_note = Path(filename).name or "uploaded file"
+
+        for source_row, _source_id, raw_address in addresses:
+            row_note = " ".join(part for part in [source_note, f"import:{file_note}", f"row:{source_row}"] if part)
+            try:
+                record = self.record_from_manual_input(raw_address)
+                reference_id = f"REF_{self.next_reference_index:07d}"
+                reference = self.reference_from_record(record, reference_id)
+                existing_ids = self.resolver.by_exact.get(reference.standardized_address, [])
+                if existing_ids:
+                    existing_reference = self.resolver.reference_by_id[existing_ids[0]]
+                    existing.append(
+                        {
+                            "source_row": source_row,
+                            "input_address": raw_address,
+                            "reference_id": existing_reference.address_id,
+                            "canonical_address": existing_reference.canonical_address,
+                        }
+                    )
+                    continue
+
+                manual_id = f"MANUAL_MS_{manual_number:06d}"
+                manual_number += 1
+                append_manual_verified_record(manual_id, record, row_note)
+                append_reference_record(self.dataset_dir, reference)
+                self.resolver.add_reference(reference)
+                self.reference_count += 1
+                self.next_reference_index += 1
+                added.append(
+                    {
+                        "source_row": source_row,
+                        "input_address": raw_address,
+                        "reference_id": reference.address_id,
+                        "canonical_address": reference.canonical_address,
+                    }
+                )
+            except ValueError as exc:
+                failures.append(
+                    {
+                        "source_row": source_row,
+                        "input_address": raw_address,
+                        "error": str(exc),
+                    }
+                )
+
+        if added:
+            update_reference_metadata(self.dataset_dir, len(added))
+        return {
+            "imported": True,
+            "row_count": len(addresses),
+            "added_count": len(added),
+            "existing_count": len(existing),
+            "failed_count": len(failures),
+            "added": added[:10],
+            "existing": existing[:10],
+            "failures": failures[:10],
             "reference_count": self.reference_count,
         }
 
@@ -2311,11 +2723,17 @@ class ResolverRequestHandler(BaseHTTPRequestHandler):
         if route == "/api/add-address":
             self.add_verified_address()
             return
+        if route == "/api/add-addresses":
+            self.import_verified_addresses()
+            return
         if route == "/api/feedback":
             self.record_feedback()
             return
         if route == "/api/training/start":
             self.start_training()
+            return
+        if route == "/api/batch-columns":
+            self.batch_columns()
             return
         if route == "/api/batch-resolve":
             self.batch_resolve()
@@ -2401,6 +2819,24 @@ class ResolverRequestHandler(BaseHTTPRequestHandler):
         except Exception as exc:  # pragma: no cover - returned to local UI
             self.send_json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
 
+    def batch_columns(self) -> None:
+        try:
+            form = self.parse_multipart_form()
+            uploaded = form.get("file")
+            if not isinstance(uploaded, dict):
+                self.send_json({"error": "File is required."}, status=HTTPStatus.BAD_REQUEST)
+                return
+            filename = str(uploaded.get("filename") or "addresses.csv")
+            content = uploaded.get("content")
+            if not isinstance(content, bytes) or not content:
+                self.send_json({"error": "Uploaded file is empty."}, status=HTTPStatus.BAD_REQUEST)
+                return
+            self.send_json(inspect_batch_columns(filename, content))
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+        except Exception as exc:  # pragma: no cover - returned to local UI
+            self.send_json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+
     def batch_resolve(self) -> None:
         try:
             form = self.parse_multipart_form()
@@ -2414,12 +2850,59 @@ class ResolverRequestHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": "Uploaded file is empty."}, status=HTTPStatus.BAD_REQUEST)
                 return
             address_column = str(form.get("address_column") or "")
-            output_filename, workbook, row_count = self.service.resolve_batch(filename, content, address_column)
+            id_column = str(form.get("id_column") or "")
+            has_header_value = str(form.get("has_header") or "").strip().lower()
+            has_header = None
+            if has_header_value in {"1", "true", "yes"}:
+                has_header = True
+            elif has_header_value in {"0", "false", "no"}:
+                has_header = False
+            output_filename, workbook, row_count = self.service.resolve_batch(
+                filename,
+                content,
+                address_column,
+                id_column,
+                has_header,
+            )
             self.send_bytes(
                 workbook,
                 content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 filename=output_filename,
                 extra_headers={"X-Ady-Resolved-Rows": str(row_count)},
+            )
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+        except Exception as exc:  # pragma: no cover - returned to local UI
+            self.send_json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    def import_verified_addresses(self) -> None:
+        try:
+            form = self.parse_multipart_form()
+            uploaded = form.get("file")
+            if not isinstance(uploaded, dict):
+                self.send_json({"error": "File is required."}, status=HTTPStatus.BAD_REQUEST)
+                return
+            filename = str(uploaded.get("filename") or "verified_addresses.csv")
+            content = uploaded.get("content")
+            if not isinstance(content, bytes) or not content:
+                self.send_json({"error": "Uploaded file is empty."}, status=HTTPStatus.BAD_REQUEST)
+                return
+            address_column = str(form.get("address_column") or "")
+            source_note = str(form.get("source_note") or "")
+            has_header_value = str(form.get("has_header") or "").strip().lower()
+            has_header = None
+            if has_header_value in {"1", "true", "yes"}:
+                has_header = True
+            elif has_header_value in {"0", "false", "no"}:
+                has_header = False
+            self.send_json(
+                self.service.import_verified_addresses(
+                    filename,
+                    content,
+                    address_column,
+                    source_note,
+                    has_header,
+                )
             )
         except ValueError as exc:
             self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)

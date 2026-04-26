@@ -453,7 +453,7 @@ STREET_TYPE_CONFUSIONS: Dict[str, Sequence[str]] = {
     "CIR": ("CT", "LOOP", "CV"),
     "CT": ("CIR", "PL"),
     "CV": ("CT", "CIR"),
-    "DR": ("RD", "AVE", "WAY"),
+    "DR": ("RD", "AVE", "ST", "WAY"),
     "HWY": ("RD", "BLVD"),
     "LN": ("RD", "DR", "ALY"),
     "LOOP": ("CIR", "TRL"),

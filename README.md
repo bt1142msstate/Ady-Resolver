@@ -395,11 +395,15 @@ automatically and the Training panel shows progress while a run is active. A
 Correct or Save Correction click also adds an exact-input override, so resolving
 the same typo again can return a trusted `feedback_override` match immediately
 while the model update runs.
+The Add Verified Address panel can also import verified addresses from `.csv`
+or `.xlsx` files: choose the file, select the address column from the detected
+dropdown, and import the rows into the manual verified supplement.
 
-The Batch Resolve panel accepts `.csv` and `.xlsx` files with an address column.
-It returns an `.xlsx` report with source row, original address, standardized
-address, resolved address, confidence, review flag, match ID, stage, and the top
-three candidate addresses.
+The Batch Resolve panel accepts `.csv` and `.xlsx` files, inspects the selected
+file, and lets you choose the address column and an optional ID column from
+dropdowns. It returns an `.xlsx` report with source row, retained source ID,
+original address, standardized address, resolved address, confidence, review
+flag, match ID, stage, and the top three candidate addresses.
 
 ## Tests
 

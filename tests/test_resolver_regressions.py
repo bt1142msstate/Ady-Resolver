@@ -177,6 +177,19 @@ class ResolverRegressionTests(unittest.TestCase):
         self.assertEqual("385 COLAGE VIEW DR, STARKVILLE MS", parsed.standardized_address)
         self.assertIn("TARGET", candidate_ids)
 
+    def test_truncated_city_street_typos_and_type_confusion_resolve(self) -> None:
+        rows = [
+            reference("TARGET", "385", "COLLEGE VIEW", "ST", "STARKVILLE", zip_code="39759"),
+            reference("STAR_CITY", "385", "MAIN", "DR", "STAR", zip_code="39167"),
+        ]
+        resolver = Resolver(rows, build_city_lookup(rows))
+
+        parsed = resolver.parse("385 collagr vieww dr stark MS")
+        resolution = resolver.resolve_stage1(parsed, review_threshold=0.8)
+
+        self.assertEqual("385 COLLAGR VIEWW DR, STARKVILLE MS", parsed.standardized_address)
+        self.assertEqual("TARGET", resolution.predicted_match_id)
+
     def test_west_place_is_parsed_as_street_name_not_empty_directional(self) -> None:
         rows = [
             reference("TARGET", "419", "WEST", "PL", "MADISON", zip_code="39110"),
