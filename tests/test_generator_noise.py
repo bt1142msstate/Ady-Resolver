@@ -1,4 +1,5 @@
 import random
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -11,10 +12,15 @@ sys.path.insert(0, str(SRC_DIR))
 from address_dataset_generator import (  # noqa: E402
     AddressRecord,
     DatasetBuilder,
+    HARD_OPS,
+    MEDIUM_OPS,
     RenderStyle,
     canonical_address,
     op_compound_local_typo,
+    op_house_drop_digit,
+    op_house_after_street_name,
     op_heavy_city_typo_with_state,
+    op_reordered_locality_typo,
     render_address,
 )
 
@@ -119,6 +125,60 @@ class GeneratorNoiseTests(unittest.TestCase):
         self.assertNotEqual("Newton", record.city)
         self.assertEqual("MS", record.state)
         self.assertFalse(style.include_commas)
+
+    def test_reordered_locality_typo_moves_house_after_street_name(self) -> None:
+        record = AddressRecord(
+            address_id="REF_TEST",
+            house_number="101",
+            predir="",
+            street_name="Candace",
+            street_type="ST",
+            suffixdir="",
+            unit_type="",
+            unit_value="",
+            city="Newton",
+            state="MS",
+            zip_code="39345",
+        )
+        style = RenderStyle()
+
+        tags = op_reordered_locality_typo(record, style, random.Random(7))
+        rendered = render_address(record, style)
+
+        self.assertIsNotNone(tags)
+        tag_parts = set(tags.split("|"))
+        self.assertIn("house_after_street_name", tag_parts)
+        self.assertIn("street_type_typo", tag_parts)
+        self.assertIn("heavy_city_typo_with_state", tag_parts)
+        self.assertIn("common_state_typo", tag_parts)
+        self.assertRegex(rendered.lower(), re.compile(r"\bcandace\s+\d+"))
+        self.assertFalse(rendered.lower().startswith(("101 ", "10 ", "01 ")))
+        self.assertNotIn("39345", rendered)
+
+    def test_house_drop_digit_can_create_missing_digit_examples(self) -> None:
+        record = AddressRecord(
+            address_id="REF_TEST",
+            house_number="101",
+            predir="",
+            street_name="Candace",
+            street_type="ST",
+            suffixdir="",
+            unit_type="",
+            unit_value="",
+            city="Newton",
+            state="MS",
+            zip_code="39345",
+        )
+
+        tag = op_house_drop_digit(record, RenderStyle(), random.Random(0))
+
+        self.assertEqual("house_drop_digit", tag)
+        self.assertLess(len(record.house_number), 3)
+
+    def test_reordered_and_missing_digit_ops_are_in_training_pools(self) -> None:
+        self.assertIn(op_house_after_street_name, MEDIUM_OPS)
+        self.assertIn(op_reordered_locality_typo, HARD_OPS)
+        self.assertIn(op_house_drop_digit, HARD_OPS)
 
 
 if __name__ == "__main__":

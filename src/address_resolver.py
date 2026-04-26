@@ -41,6 +41,17 @@ FULL_TO_DIRECTION = {value: key for key, value in DIRECTION_TO_FULL.items()}
 FULL_TO_STREET_TYPE = {value: key for key, value in STREET_TYPE_TO_FULL.items()}
 FULL_TO_UNIT_TYPE = {value: key for key, value in UNIT_TYPE_TO_FULL.items()}
 STATE_NAME_TO_ABBREV = {name: abbr for abbr, name in STATE_ABBREV_TO_NAME.items()}
+STATE_TYPO_ALIASES = {
+    "MISSIPPI": "MS",
+    "MISSPPI": "MS",
+    "MISSPI": "MS",
+    "MISSISSPI": "MS",
+    "MISSISSIPI": "MS",
+    "MISSISIPPI": "MS",
+    "MISISIPPI": "MS",
+    "MISISSIPPI": "MS",
+    "MISSISSPPI": "MS",
+}
 STREET_TYPE_TYPO_ALIASES = {
     "SR": "ST",
     "SY": "ST",
@@ -673,6 +684,35 @@ def canonical_street_type_token(token: str, allow_typos: bool = True) -> str:
     return ""
 
 
+def looks_like_street_descriptor(token: str) -> bool:
+    return bool(
+        canonical_abbrev(token, DIRECTION_TO_FULL, FULL_TO_DIRECTION) in DIRECTION_TO_FULL
+        or canonical_street_type_token(token, allow_typos=False)
+        or contextual_street_type_token(token)
+    )
+
+
+def extract_reordered_house_number(tokens: List[str]) -> str:
+    max_index = min(len(tokens) - 1, 4)
+    for idx in range(1, max_index):
+        token = tokens[idx]
+        if not any(ch.isdigit() for ch in token) or token.startswith("#"):
+            continue
+        previous = tokens[idx - 1]
+        previous_is_unit = canonical_abbrev(previous.lstrip("#"), UNIT_TYPE_TO_FULL, FULL_TO_UNIT_TYPE) in UNIT_TYPE_TO_FULL
+        if previous_is_unit:
+            continue
+        prefix = tokens[:idx]
+        suffix = tokens[idx + 1:]
+        if not prefix or not suffix:
+            continue
+        if all(looks_like_street_descriptor(part) for part in prefix):
+            continue
+        del tokens[idx]
+        return token
+    return ""
+
+
 def contextual_street_type_token(token: str) -> str:
     normalized = re.sub(r"[^A-Z0-9]+", "", normalize_text(token))
     if not normalized:
@@ -707,6 +747,10 @@ def extract_state(tokens: List[str], city_lookup: Optional[Dict[Tuple[str, ...],
             for token in candidate_tokens
         ):
             continue
+        candidate_key = " ".join(candidate_tokens)
+        if candidate_key in STATE_TYPO_ALIASES:
+            del tokens[-width:]
+            return STATE_TYPO_ALIASES[candidate_key]
         candidate = " ".join(tokens[-width:])
         minimum_score = 0.88 if width == 1 else 0.84
         match, best_score, second_score = closest_choice(candidate, tuple(STATE_NAME_TO_ABBREV), minimum_score=minimum_score)
@@ -745,6 +789,8 @@ def parse_query_address(raw: str, city_lookup: Dict[Tuple[str, ...], str]) -> Pa
     house_number = ""
     if tokens and any(ch.isdigit() for ch in tokens[0]):
         house_number = tokens.pop(0)
+    if not house_number:
+        house_number = extract_reordered_house_number(tokens)
 
     if len(tokens) >= 2:
         unit_pos = None
@@ -832,6 +878,8 @@ class Resolver:
         self.by_house_city_street_name = defaultdict(list)
         self.by_house_city_core = defaultdict(list)
         self.by_house_city_state = defaultdict(list)
+        self.by_city_street = defaultdict(list)
+        self.by_city_street_name = defaultdict(list)
         self.by_zip = defaultdict(list)
         self.by_city_state = defaultdict(list)
         self.by_state = defaultdict(list)
@@ -864,6 +912,8 @@ class Resolver:
         self.by_house_city_street_name[(row.house_number, row.city, row.state, row.street_name)].append(row.address_id)
         self.by_house_city_core[(row.house_number, row.city, row.state, " ".join(bit for bit in [row.predir, row.street_name, row.suffixdir] if bit))].append(row.address_id)
         self.by_house_city_state[(row.house_number, row.city, row.state)].append(row.address_id)
+        self.by_city_street[(row.city, row.state, row.street_signature)].append(row.address_id)
+        self.by_city_street_name[(row.city, row.state, row.street_name)].append(row.address_id)
         self.by_zip[row.zip_code].append(row.address_id)
         self.by_city_state[(row.city, row.state)].append(row.address_id)
         self.by_state[row.state].append(row.address_id)
@@ -942,6 +992,7 @@ class Resolver:
                 leading_tokens = candidate_tokens[:-1]
                 if any(
                     token in STREET_TYPE_TYPO_ALIASES
+                    or token in CONTEXTUAL_STREET_TYPE_TYPO_ALIASES
                     or (canonical_street_type_token(token, allow_typos=False) and token != "ST")
                     for token in leading_tokens
                 ):
@@ -1277,6 +1328,20 @@ class Resolver:
                 self.add_blocking_candidates(blocking_scores, self.by_zip_prefix.get(variant.zip_code[:3], []), 2.5, limit=70)
             if variant.city and variant.state:
                 self.add_blocking_candidates(blocking_scores, self.by_city_state.get((variant.city, variant.state), []), 5.5, limit=60)
+                if variant.street_signature:
+                    self.add_blocking_candidates(
+                        blocking_scores,
+                        self.by_city_street.get((variant.city, variant.state, variant.street_signature), []),
+                        7.5,
+                        limit=80,
+                    )
+                if variant.street_name:
+                    self.add_blocking_candidates(
+                        blocking_scores,
+                        self.by_city_street_name.get((variant.city, variant.state, variant.street_name), []),
+                        7.0,
+                        limit=100,
+                    )
             if variant.state:
                 self.add_blocking_candidates(blocking_scores, self.by_state.get(variant.state, []), 1.0, limit=90)
             if variant.house_number:

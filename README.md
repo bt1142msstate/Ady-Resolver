@@ -29,7 +29,8 @@ an input address is standardized, scored, and matched.
   street/city features, rank/margin features, ZIP/city consistency,
   source-quality weighting, and stronger house-number mismatch penalties.
 - Typo handling for street names, street suffixes, city names, directionals,
-  and compounded input errors such as `101 candoowse sr newtooon MS`.
+  reordered house-number positions, and compounded input errors such as
+  `101 candoowse sr newtooon MS` or `candace 101 se netooailn missppi`.
 - Data-quality guards for obvious parcel/location artifacts such as zero house
   numbers, non-numeric house numbers, side-of-road markers, `N OF ...`
   descriptors, `DOD` note rows, and duplicated terminal street types.
@@ -150,7 +151,7 @@ python3 src/address_dataset_generator.py \
   --paired-output-dir datasets/ms_public_maris \
   --paired-shared-reference \
   --reference-size 5000 \
-  --noisy-per-reference 8
+  --noisy-per-reference 12
 ```
 
 Generate from the public MARIS statewide parcel fallback:
@@ -240,9 +241,11 @@ For larger address lists, raise `--reference-size` and keep
 `--noisy-per-reference` high enough to create the typo patterns you care about.
 The default generator setting is now `12` noisy positives per reference; use
 `16` or more when you want a slower, harder training set for confidence
-calibration. The resulting model can be passed to the app with `--model-path`,
-and the app can use any reference directory containing a
-`reference_addresses.csv`.
+calibration. Hard profiles include reordered examples where the house number
+appears after the street name, heavy city/state typos, street-type typos such as
+`ST -> SE`, and dropped house-number digits. The resulting model can be passed
+to the app with `--model-path`, and the app can use any reference directory
+containing a `reference_addresses.csv`.
 
 Important coverage note: no open public web download tested here proves every
 current Mississippi address is present. The generator's
@@ -360,19 +363,15 @@ python3 src/address_resolver.py \
   --jobs 1
 ```
 
-Current checked-in model smoke results on April 25, 2026:
+Current checked-in model smoke results on April 26, 2026:
 
-- 60k active-v2 eval, 5k-reference candidate universe: combined accuracy
-  `0.8796`, recall `0.8900`, precision `0.9221`. On the same harder eval set,
-  the previous default model scored combined accuracy `0.8088`, recall
-  `0.8347`, precision `0.8694`.
+- 75k active-v2 eval, 5k-reference candidate universe: combined accuracy
+  `0.8172`, recall `0.8283`, precision `0.9231`, accepted accuracy `0.9873`.
 - Stage 2 is materially better than Stage 1 on that active-v2 eval: Stage 1
-  accuracy `0.5762`, Stage 2 accuracy `0.8859`, combined accuracy `0.8796`.
+  accuracy `0.4682`, Stage 2 accuracy `0.8189`, combined accuracy `0.8172`.
 - 1k active-v2 live-reference smoke, 1.75M-reference candidate universe:
-  combined accuracy `0.610`, recall `0.610`, precision `0.8828`, accepted
-  accuracy `0.9057`. On the same live-reference slice, the previous default
-  model scored combined accuracy `0.604`, recall `0.604`, precision `0.9042`,
-  accepted accuracy `0.7474`.
+  combined accuracy `0.640`, recall `0.640`, precision `0.8432`, accepted
+  accuracy `0.9155`.
 
 Run the local resolver app:
 

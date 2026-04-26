@@ -1,110 +1,110 @@
 {
   "model": {
     "weights": [
-      -17.06698342109676,
-      12.428309538475801,
-      2.8082864803921987,
-      -0.356145545640748,
-      -0.7534586712170015,
-      2.8444946494042505,
-      0.052958539755996445,
-      0.5296057711722245,
-      0.09181956245019568,
-      0.5970741671662414,
-      1.2237600428899305,
-      0.27713165553726316,
-      5.077869271295,
-      3.367229618616176,
-      -0.5778720515468004,
-      -0.48958343597246945,
-      -0.21192485785738138,
-      -0.2199158430061356,
-      0.45634742269453055,
-      1.0017859170230567,
-      0.14143435483643005,
-      1.8840002404207574,
-      2.278533308309261,
-      0.24606946367930277,
-      -0.025976445718047126,
-      0.08744579010279856,
-      -0.8973913937280853,
-      -1.890148706242166
+      -16.71226150656044,
+      14.571021575222387,
+      1.1769881633843902,
+      -0.44424706525564917,
+      -0.5997267308891913,
+      1.3997879862529399,
+      0.5509357468742588,
+      -0.152649810955566,
+      -0.02280259700840169,
+      0.4758497967201503,
+      0.8337001228882044,
+      -0.056574623469884525,
+      4.279259223578069,
+      2.5825644433391095,
+      -0.9542305153504842,
+      -1.4577089013479303,
+      -0.012739788901317346,
+      0.038909950702321804,
+      0.658911419016564,
+      1.3390002167116326,
+      -0.42529558370355064,
+      2.234119711001445,
+      1.3987763463275737,
+      1.0922400032313404,
+      0.5312565898323971,
+      -0.040053187563518215,
+      -1.042800757286742,
+      -0.2538390599365024
     ],
     "accept_tree": {
       "leaf": false,
       "feature_idx": 13,
-      "threshold": 0.6771162282288435,
+      "threshold": 0.3851301612198128,
       "left": {
         "leaf": false,
         "feature_idx": 14,
-        "threshold": 0.3984628783085383,
+        "threshold": 0.13828960919220065,
         "left": {
           "leaf": false,
-          "feature_idx": 14,
-          "threshold": 0.18639406784231854,
+          "feature_idx": 2,
+          "threshold": 0.42857142857142855,
           "left": {
             "leaf": false,
             "feature_idx": 14,
-            "threshold": 0.057874956558827795,
+            "threshold": 0.03875612540953055,
             "left": {
               "leaf": true,
-              "probability": 0.01134358457272498,
-              "count": 7934
+              "probability": 0.02586206896551724,
+              "count": 7772
             },
             "right": {
               "leaf": true,
-              "probability": 0.06401291016675632,
-              "count": 3718
+              "probability": 0.09675690163495042,
+              "count": 3731
             }
           },
           "right": {
             "leaf": false,
-            "feature_idx": 4,
-            "threshold": 0.76,
+            "feature_idx": 14,
+            "threshold": 0.11369266981658399,
             "left": {
               "leaf": true,
-              "probability": 0.312,
-              "count": 750
+              "probability": 0.19667170953101362,
+              "count": 661
             },
             "right": {
               "leaf": true,
-              "probability": 0.11291413116970926,
-              "count": 1479
+              "probability": 0.5303030303030303,
+              "count": 66
             }
           }
         },
         "right": {
           "leaf": false,
-          "feature_idx": 19,
-          "threshold": 0.8,
+          "feature_idx": 4,
+          "threshold": 0.76,
           "left": {
             "leaf": false,
-            "feature_idx": 15,
-            "threshold": 0.25,
+            "feature_idx": 14,
+            "threshold": 0.19126169710807853,
             "left": {
               "leaf": true,
-              "probability": 0.2982456140350877,
-              "count": 57
+              "probability": 0.4152334152334152,
+              "count": 407
             },
             "right": {
               "leaf": true,
-              "probability": 0.6828193832599119,
-              "count": 454
+              "probability": 0.6307420494699647,
+              "count": 566
             }
           },
           "right": {
             "leaf": false,
-            "feature_idx": 1,
-            "threshold": 0.5,
+            "feature_idx": 12,
+            "threshold": 0.5238095238095238,
             "left": {
               "leaf": true,
-              "probability": 0.6111111111111112,
-              "count": 162
+              "probability": 0.16361556064073227,
+              "count": 874
             },
             "right": {
               "leaf": true,
-              "probability": 0.22342342342342342,
-              "count": 555
+              "probability": 0.3898305084745763,
+              "count": 531
             }
           }
         }
@@ -112,74 +112,74 @@
       "right": {
         "leaf": false,
         "feature_idx": 13,
-        "threshold": 0.8824862778094863,
+        "threshold": 0.6597550209350371,
         "left": {
           "leaf": false,
           "feature_idx": 14,
-          "threshold": 0.3103569429317784,
+          "threshold": 0.17978063219734713,
           "left": {
             "leaf": false,
             "feature_idx": 14,
-            "threshold": 0.07757785231474512,
+            "threshold": 0.10325338313761068,
             "left": {
               "leaf": true,
-              "probability": 0.09293680297397769,
-              "count": 269
+              "probability": 0.18434782608695652,
+              "count": 575
             },
             "right": {
               "leaf": true,
-              "probability": 0.3953488372093023,
-              "count": 387
+              "probability": 0.39067055393586003,
+              "count": 343
             }
           },
           "right": {
             "leaf": false,
-            "feature_idx": 19,
-            "threshold": 0.8,
+            "feature_idx": 4,
+            "threshold": 0.8333333333333334,
             "left": {
               "leaf": true,
-              "probability": 0.8387942332896461,
-              "count": 1526
+              "probability": 0.8022369089984749,
+              "count": 1967
             },
             "right": {
               "leaf": true,
-              "probability": 0.6474820143884892,
-              "count": 1390
+              "probability": 0.6372735938989513,
+              "count": 2098
             }
           }
         },
         "right": {
           "leaf": false,
           "feature_idx": 13,
-          "threshold": 0.9659200098403073,
+          "threshold": 0.8845971247232972,
           "left": {
             "leaf": false,
             "feature_idx": 14,
-            "threshold": 0.3127266752854774,
+            "threshold": 0.2659763833065867,
             "left": {
               "leaf": true,
-              "probability": 0.5893186003683242,
-              "count": 543
+              "probability": 0.5128205128205128,
+              "count": 741
             },
             "right": {
               "leaf": true,
-              "probability": 0.9181834896120611,
-              "count": 5439
+              "probability": 0.91683038637852,
+              "count": 7635
             }
           },
           "right": {
             "leaf": false,
-            "feature_idx": 13,
-            "threshold": 0.9827192320377852,
+            "feature_idx": 4,
+            "threshold": 0.96,
             "left": {
               "leaf": true,
-              "probability": 0.958984375,
-              "count": 4096
+              "probability": 0.9226774379688402,
+              "count": 1733
             },
             "right": {
               "leaf": true,
-              "probability": 0.9906983611398199,
-              "count": 13546
+              "probability": 0.9884345844619287,
+              "count": 23259
             }
           }
         }
@@ -188,65 +188,65 @@
     "training_metadata": {
       "hard_negative_mining": true,
       "base": {
-        "training_queries": 42305,
-        "positive_queries": 28320,
-        "rough_hard_negative_rows": 27562,
-        "rough_hard_negatives": 107748,
-        "forced_positive_candidates": 1743,
-        "negative_queries": 13985,
-        "pair_rows": 27562,
-        "calibration_rows": 110371
+        "training_queries": 52959,
+        "positive_queries": 42480,
+        "rough_hard_negative_rows": 41255,
+        "rough_hard_negatives": 160112,
+        "forced_positive_candidates": 4903,
+        "negative_queries": 10479,
+        "pair_rows": 41255,
+        "calibration_rows": 144568
       },
       "mined": {
-        "mined_queries_with_candidates": 42305,
-        "mined_positive_negative_calibration_rows": 15909,
-        "mined_pair_rows": 10068,
-        "mined_positive_hard_negatives": 21454,
-        "first_pass_positive_rank_errors": 1958,
-        "mined_no_match_calibration_rows": 7473,
-        "pair_rows": 10068,
-        "calibration_rows": 23382
+        "mined_queries_with_candidates": 52959,
+        "mined_positive_negative_calibration_rows": 71157,
+        "mined_pair_rows": 35636,
+        "mined_positive_hard_negatives": 87801,
+        "first_pass_positive_rank_errors": 5831,
+        "mined_no_match_calibration_rows": 16255,
+        "pair_rows": 35636,
+        "calibration_rows": 87412
       },
-      "final_pair_rows": 37630,
-      "final_calibration_rows": 133753,
-      "accept_rows": 42305
+      "final_pair_rows": 76891,
+      "final_calibration_rows": 231980,
+      "accept_rows": 52959
     }
   },
-  "accept_threshold": 0.4,
-  "review_threshold": 0.99,
+  "accept_threshold": 0.42,
+  "review_threshold": 0.98,
   "metadata": {
     "train_dataset_dir": "/Users/brandont/Documents/Ady Resolver/datasets/fresh_60k_active_v2/train_dataset",
     "eval_dataset_dir": "/Users/brandont/Documents/Ady Resolver/datasets/fresh_60k_active_v2/eval_dataset",
-    "query_count": 60000,
+    "query_count": 75000,
     "reference_count": 5000,
-    "train_query_count": 42305,
-    "calibration_query_count": 8845,
+    "train_query_count": 52959,
+    "calibration_query_count": 11030,
     "active_learning_feedback": [],
     "stage2_training": {
       "hard_negative_mining": true,
       "base": {
-        "training_queries": 42305,
-        "positive_queries": 28320,
-        "rough_hard_negative_rows": 27562,
-        "rough_hard_negatives": 107748,
-        "forced_positive_candidates": 1743,
-        "negative_queries": 13985,
-        "pair_rows": 27562,
-        "calibration_rows": 110371
+        "training_queries": 52959,
+        "positive_queries": 42480,
+        "rough_hard_negative_rows": 41255,
+        "rough_hard_negatives": 160112,
+        "forced_positive_candidates": 4903,
+        "negative_queries": 10479,
+        "pair_rows": 41255,
+        "calibration_rows": 144568
       },
       "mined": {
-        "mined_queries_with_candidates": 42305,
-        "mined_positive_negative_calibration_rows": 15909,
-        "mined_pair_rows": 10068,
-        "mined_positive_hard_negatives": 21454,
-        "first_pass_positive_rank_errors": 1958,
-        "mined_no_match_calibration_rows": 7473,
-        "pair_rows": 10068,
-        "calibration_rows": 23382
+        "mined_queries_with_candidates": 52959,
+        "mined_positive_negative_calibration_rows": 71157,
+        "mined_pair_rows": 35636,
+        "mined_positive_hard_negatives": 87801,
+        "first_pass_positive_rank_errors": 5831,
+        "mined_no_match_calibration_rows": 16255,
+        "pair_rows": 35636,
+        "calibration_rows": 87412
       },
-      "final_pair_rows": 37630,
-      "final_calibration_rows": 133753,
-      "accept_rows": 42305
+      "final_pair_rows": 76891,
+      "final_calibration_rows": 231980,
+      "accept_rows": 52959
     }
   }
 }

@@ -82,6 +82,18 @@ class ResolverRegressionTests(unittest.TestCase):
         resolution = self.resolver.resolve_stage1(parsed, review_threshold=0.8)
         self.assertEqual("TARGET", resolution.predicted_match_id)
 
+    def test_reordered_house_city_and_state_typos_resolve(self) -> None:
+        parsed = self.resolver.parse("candece 101 se Netooailn Missppi")
+        self.assertEqual("101 CANDECE ST, NEWTON MS", parsed.standardized_address)
+        resolution = self.resolver.resolve_stage1(parsed, review_threshold=0.8)
+        self.assertEqual("TARGET", resolution.predicted_match_id)
+
+    def test_reordered_missing_digit_candidate_retrieves_same_street_city(self) -> None:
+        parsed = self.resolver.parse("candece 10 se Netooailn Missppi")
+        self.assertEqual("10 CANDECE ST, NEWTON MS", parsed.standardized_address)
+        candidate_ids = self.resolver.candidate_ids(parsed, limit=10)
+        self.assertIn("TARGET", candidate_ids)
+
     def test_exact_city_keeps_southeast_suffix_direction(self) -> None:
         parsed = self.resolver.parse("101 candace se newton ms")
         self.assertEqual("101 CANDACE SE, NEWTON MS", parsed.standardized_address)

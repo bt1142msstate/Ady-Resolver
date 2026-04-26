@@ -512,6 +512,7 @@ class RenderStyle:
     include_zip: bool = True
     include_commas: bool = True
     unit_first: bool = False
+    house_after_street_name: bool = False
     slash_unit: bool = False
     extra_spaces: bool = False
 
@@ -2372,10 +2373,14 @@ def render_address(record: AddressRecord, style: Optional[RenderStyle] = None) -
     predir = render_component_direction(record.predir, style)
     street_type = render_component_street_type(record.street_type, style)
     suffixdir = render_component_direction(record.suffixdir, style)
-    street_bits = [record.house_number]
+    street_bits: List[str] = []
+    if not style.house_after_street_name:
+        street_bits.append(record.house_number)
     if predir:
         street_bits.append(predir)
     street_bits.append(record.street_name)
+    if style.house_after_street_name:
+        street_bits.append(record.house_number)
     if street_type:
         street_bits.append(street_type)
     if suffixdir:
@@ -2583,6 +2588,14 @@ def op_heavy_city_typo_with_state(record: AddressRecord, style: RenderStyle, rng
     return "heavy_city_typo_with_state"
 
 
+def op_house_after_street_name(record: AddressRecord, style: RenderStyle, rng: random.Random) -> Optional[str]:
+    if not record.house_number or not record.street_name:
+        return None
+    style.house_after_street_name = True
+    style.include_commas = False
+    return "house_after_street_name"
+
+
 def op_phonetic_city(record: AddressRecord, style: RenderStyle, rng: random.Random) -> Optional[str]:
     if len(record.city.replace(" ", "")) < 4:
         return None
@@ -2623,6 +2636,22 @@ def op_typo_state(record: AddressRecord, style: RenderStyle, rng: random.Random)
     tokens[idx] = mutate_locality_token(tokens[idx], rng)
     record.state = " ".join(tokens)
     return "state_typo"
+
+
+def op_common_state_typo(record: AddressRecord, style: RenderStyle, rng: random.Random) -> Optional[str]:
+    if record.state != "MS":
+        return op_typo_state(record, style, rng)
+    record.state = rng.choice(
+        [
+            "Missppi",
+            "Missippi",
+            "Mississipi",
+            "Mississppi",
+            "Misissippi",
+            "Misisippi",
+        ]
+    )
+    return "common_state_typo"
 
 
 def op_phonetic_state(record: AddressRecord, style: RenderStyle, rng: random.Random) -> Optional[str]:
@@ -2715,6 +2744,28 @@ def op_compound_local_typo(record: AddressRecord, style: RenderStyle, rng: rando
     return "|".join(tags)
 
 
+def op_reordered_locality_typo(record: AddressRecord, style: RenderStyle, rng: random.Random) -> Optional[str]:
+    tags: List[str] = []
+    for op in (op_house_after_street_name, op_typo_street_type, op_heavy_city_typo_with_state, op_common_state_typo):
+        tag = op(record, style, rng)
+        if tag:
+            tags.append(tag)
+    if rng.random() < 0.45:
+        tag = op_house_drop_digit(record, style, rng)
+        if tag:
+            tags.append(tag)
+
+    if len(tags) < 3:
+        return None
+
+    if rng.random() < 0.55:
+        style.lowercase = True
+        style.uppercase = False
+    style.include_zip = False
+    style.include_commas = False
+    return "|".join(tags)
+
+
 def op_ocr_street(record: AddressRecord, style: RenderStyle, rng: random.Random) -> Optional[str]:
     tokens = record.street_name.split()
     candidates = [idx for idx, token in enumerate(tokens) if len(token) >= 4]
@@ -2767,6 +2818,15 @@ def op_merge_tokens(record: AddressRecord, style: RenderStyle, rng: random.Rando
 def op_house_digit_error(record: AddressRecord, style: RenderStyle, rng: random.Random) -> Optional[str]:
     record.house_number = mutate_numeric_token(record.house_number, rng)
     return "house_digit_error"
+
+
+def op_house_drop_digit(record: AddressRecord, style: RenderStyle, rng: random.Random) -> Optional[str]:
+    digit_positions = [idx for idx, char in enumerate(record.house_number) if char.isdigit()]
+    if len(digit_positions) < 2:
+        return None
+    idx = rng.choice(digit_positions)
+    record.house_number = record.house_number[:idx] + record.house_number[idx + 1:]
+    return "house_drop_digit"
 
 
 def op_house_near_miss(record: AddressRecord, style: RenderStyle, rng: random.Random) -> Optional[str]:
@@ -2822,6 +2882,7 @@ MEDIUM_OPS: Sequence[Operation] = EASY_OPS + (
     op_typo_street,
     op_phonetic_street,
     op_extra_or_missing_street_letter,
+    op_house_after_street_name,
     op_typo_city,
     op_heavy_city_typo_no_state,
     op_heavy_city_typo_with_state,
@@ -2830,6 +2891,7 @@ MEDIUM_OPS: Sequence[Operation] = EASY_OPS + (
     op_ocr_locality,
     op_wrong_city,
     op_typo_state,
+    op_common_state_typo,
     op_phonetic_state,
     op_drop_city,
     op_drop_state,
@@ -2842,7 +2904,9 @@ MEDIUM_OPS: Sequence[Operation] = EASY_OPS + (
 
 HARD_OPS: Sequence[Operation] = MEDIUM_OPS + (
     op_compound_local_typo,
+    op_reordered_locality_typo,
     op_house_near_miss,
+    op_house_drop_digit,
     op_house_digit_error,
     op_zip_digit_error,
 )
@@ -2854,6 +2918,7 @@ LOCALITY_OPS: Sequence[Operation] = (
     op_ocr_locality,
     op_wrong_city,
     op_typo_state,
+    op_common_state_typo,
     op_phonetic_state,
     op_drop_city,
     op_drop_state,
@@ -2904,6 +2969,7 @@ class Corruptor:
                 profile_ops = [
                     op_heavy_city_typo_no_state,
                     op_heavy_city_typo_with_state,
+                    op_reordered_locality_typo,
                     op_phonetic_street,
                     op_typo_street_type,
                     op_extra_or_missing_street_letter,
