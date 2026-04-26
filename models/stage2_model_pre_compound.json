@@ -1,0 +1,194 @@
+{
+  "model": {
+    "weights": [
+      -14.467303182671483,
+      11.342827770266938,
+      4.283399241001117,
+      2.3120526453097363,
+      -1.1886850775488238,
+      1.5489939003140836,
+      0.5794425894234166,
+      0.6171991811681404,
+      -0.42917609753442965,
+      0.5168957526435938,
+      1.2123567712415886,
+      0.10863550323902765,
+      0.0,
+      -0.5959397085753637,
+      -1.231795206647103,
+      -0.7003063045473167,
+      2.8673166714694447,
+      -1.2286178729999095,
+      1.1743902427713535,
+      0.18409619249103604,
+      -0.013249407638498033,
+      1.8978494750337342,
+      0.279951624790146
+    ],
+    "accept_tree": {
+      "leaf": false,
+      "feature_idx": 13,
+      "threshold": 0.7872980888962223,
+      "left": {
+        "leaf": false,
+        "feature_idx": 14,
+        "threshold": 0.4484168491830158,
+        "left": {
+          "leaf": false,
+          "feature_idx": 14,
+          "threshold": 0.2443732847109715,
+          "left": {
+            "leaf": false,
+            "feature_idx": 14,
+            "threshold": 0.09048747600644093,
+            "left": {
+              "leaf": true,
+              "probability": 0.011832691249312053,
+              "count": 10902
+            },
+            "right": {
+              "leaf": true,
+              "probability": 0.10516431924882629,
+              "count": 2130
+            }
+          },
+          "right": {
+            "leaf": false,
+            "feature_idx": 0,
+            "threshold": 0.7341772151898734,
+            "left": {
+              "leaf": true,
+              "probability": 0.20074349442379183,
+              "count": 538
+            },
+            "right": {
+              "leaf": true,
+              "probability": 0.375594294770206,
+              "count": 631
+            }
+          }
+        },
+        "right": {
+          "leaf": false,
+          "feature_idx": 4,
+          "threshold": 0.56,
+          "left": {
+            "leaf": false,
+            "feature_idx": 0,
+            "threshold": 0.9545454545454546,
+            "left": {
+              "leaf": true,
+              "probability": 0.39195979899497485,
+              "count": 398
+            },
+            "right": {
+              "leaf": true,
+              "probability": 0.8333333333333334,
+              "count": 54
+            }
+          },
+          "right": {
+            "leaf": false,
+            "feature_idx": 3,
+            "threshold": 0.18181818181818182,
+            "left": {
+              "leaf": true,
+              "probability": 0.525096525096525,
+              "count": 259
+            },
+            "right": {
+              "leaf": true,
+              "probability": 0.8718861209964412,
+              "count": 562
+            }
+          }
+        }
+      },
+      "right": {
+        "leaf": false,
+        "feature_idx": 4,
+        "threshold": 0.96,
+        "left": {
+          "leaf": false,
+          "feature_idx": 4,
+          "threshold": 0.56,
+          "left": {
+            "leaf": false,
+            "feature_idx": 0,
+            "threshold": 0.8450704225352113,
+            "left": {
+              "leaf": true,
+              "probability": 0.13636363636363635,
+              "count": 66
+            },
+            "right": {
+              "leaf": true,
+              "probability": 0.5583756345177665,
+              "count": 197
+            }
+          },
+          "right": {
+            "leaf": false,
+            "feature_idx": 14,
+            "threshold": 0.36765983447675876,
+            "left": {
+              "leaf": true,
+              "probability": 0.5254237288135594,
+              "count": 59
+            },
+            "right": {
+              "leaf": true,
+              "probability": 0.7878787878787878,
+              "count": 297
+            }
+          }
+        },
+        "right": {
+          "leaf": false,
+          "feature_idx": 13,
+          "threshold": 0.9495232662837582,
+          "left": {
+            "leaf": false,
+            "feature_idx": 14,
+            "threshold": 0.5594114459918498,
+            "left": {
+              "leaf": true,
+              "probability": 0.5213675213675214,
+              "count": 234
+            },
+            "right": {
+              "leaf": true,
+              "probability": 0.976045473000406,
+              "count": 2463
+            }
+          },
+          "right": {
+            "leaf": false,
+            "feature_idx": 14,
+            "threshold": 0.4189214662664761,
+            "left": {
+              "leaf": true,
+              "probability": 0.9807088380439659,
+              "count": 2229
+            },
+            "right": {
+              "leaf": true,
+              "probability": 0.9988255191205487,
+              "count": 21286
+            }
+          }
+        }
+      }
+    }
+  },
+  "accept_threshold": 0.4,
+  "review_threshold": 0.8,
+  "metadata": {
+    "train_dataset_dir": "/Users/brandont/Documents/Ady Resolver/datasets/fresh_60k/train_dataset",
+    "eval_dataset_dir": "/Users/brandont/Documents/Ady Resolver/datasets/fresh_60k/eval_dataset",
+    "query_count": 60000,
+    "reference_count": 5000,
+    "train_query_count": 42305,
+    "calibration_query_count": 8845
+  }
+}

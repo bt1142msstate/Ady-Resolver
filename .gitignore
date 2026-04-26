@@ -1,0 +1,27 @@
+# macOS / editor noise
+.DS_Store
+*.swp
+*.swo
+
+# Python runtime artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Generated address data and source caches
+#
+# The local Mississippi source cache is multiple GB, includes downloaded source
+# archives, and should be rebuilt with the documented commands instead of
+# committed to GitHub.
+datasets/
+runs/
+
+# Local app/runtime logs
+*.log
+
+# Duplicated class/project export artifacts
+submission/
