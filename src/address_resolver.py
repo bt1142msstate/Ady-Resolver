@@ -61,11 +61,7 @@ SPACE_RE = re.compile(r"\s+")
 TOKEN_RE = re.compile(r"[A-Z0-9#]+")
 
 
-VALID_STATES = {
-    "AL", "AR", "AZ", "CA", "CO", "DC", "FL", "GA", "IL", "IN", "KS", "KY", "LA", "MA", "MD",
-    "MI", "MN", "MO", "MS", "NC", "NE", "NH", "NJ", "NM", "NV", "NY", "OH", "OK", "OR", "PA",
-    "SC", "TN", "TX", "UT", "VA", "WA", "WI", "WV",
-}
+VALID_STATES = set(STATE_ABBREV_TO_NAME)
 
 
 @dataclass(frozen=True, slots=True)

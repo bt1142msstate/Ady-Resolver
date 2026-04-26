@@ -49,6 +49,7 @@ DEFAULT_POINT_SOURCE_DIR = PROJECT_ROOT / "datasets" / "source_cache" / "maris_p
 DEFAULT_OPENADDRESSES_SOURCE_DIR = PROJECT_ROOT / "datasets" / "source_cache" / "openaddresses_ms"
 DEFAULT_OPENADDRESSES_DIRECT_SOURCE_DIR = PROJECT_ROOT / "datasets" / "source_cache" / "openaddresses_ms_direct"
 DEFAULT_VERIFIED_SOURCE_DIR = PROJECT_ROOT / "datasets" / "source_cache" / "manual_verified_ms"
+DEMO_DATASET_DIR = PROJECT_ROOT / "examples" / "demo_reference"
 DEFAULT_MODEL_PATH = PROJECT_ROOT / "models" / "stage2_model.json"
 ZIP_CITY_ENRICHMENT_MIN_RECORDS = 25
 ZIP_CITY_ENRICHMENT_MIN_SHARE = 0.98
@@ -984,7 +985,9 @@ def reference_cache_ready(dataset_dir: Path) -> bool:
 
 
 def default_source_specs() -> List[Tuple[Path, str]]:
-    specs = [(DEFAULT_SOURCE_DIR, "maris_parcels")]
+    specs = []
+    if DEFAULT_SOURCE_DIR.exists():
+        specs.append((DEFAULT_SOURCE_DIR, "maris_parcels"))
     if DEFAULT_POINT_SOURCE_DIR.exists():
         specs.append((DEFAULT_POINT_SOURCE_DIR, "maris"))
     if DEFAULT_OPENADDRESSES_SOURCE_DIR.exists():
@@ -1256,7 +1259,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--port", type=int, default=8765, help="Port to bind.")
     parser.add_argument("--dataset-dir", type=Path, default=DEFAULT_DATASET_DIR, help="Dataset directory with reference_addresses.csv.")
     parser.add_argument("--real-address-input", type=Path, action="append", help="Real address cache used to build the app reference cache. May be repeated. Defaults to cached MARIS parcels plus cached MARIS point addresses when available.")
-    parser.add_argument("--real-address-format", default="auto", choices=["auto", "maris", "maris_parcels", "nad", "openaddresses", "address_record"], help="Input schema for custom --real-address-input values.")
+    parser.add_argument("--real-address-format", default="auto", choices=["auto", "maris", "maris_parcels", "nad", "openaddresses", "address_record", "generic"], help="Input schema for custom --real-address-input values.")
     parser.add_argument("--rebuild-reference-cache", action="store_true", help="Rebuild the app reference cache from --real-address-input before starting.")
     parser.add_argument("--model-path", type=Path, default=DEFAULT_MODEL_PATH, help="Saved Stage 2 model JSON.")
     return parser.parse_args()
@@ -1270,6 +1273,14 @@ def main() -> None:
     else:
         source_specs = [(path.expanduser().resolve(), source_format) for path, source_format in default_source_specs()]
     model_path = args.model_path.expanduser().resolve()
+    if (
+        dataset_dir == DEFAULT_DATASET_DIR.resolve()
+        and not reference_cache_ready(dataset_dir)
+        and not source_specs
+        and reference_cache_ready(DEMO_DATASET_DIR)
+    ):
+        print(f"Full reference cache not found; using demo dataset at {DEMO_DATASET_DIR}.")
+        dataset_dir = DEMO_DATASET_DIR.resolve()
     if args.rebuild_reference_cache or not reference_cache_ready(dataset_dir):
         build_reference_cache(dataset_dir, source_specs)
     if not reference_cache_ready(dataset_dir):

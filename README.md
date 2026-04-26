@@ -4,16 +4,20 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 Ady Resolver is a Python address-resolution toolkit focused on messy
-Mississippi addresses. It builds a canonical reference set from cached public
-address sources, generates typo-heavy training/evaluation data from real source
-records, and serves a local browser app for inspecting how an input address is
-standardized, scored, and matched.
+Mississippi addresses. It ships with a pretrained Stage 2 model and a small
+checked-in demo reference set, builds larger canonical reference sets from
+public or private address sources, generates typo-heavy training/evaluation
+data from real source records, and serves a local browser app for inspecting how
+an input address is standardized, scored, and matched.
 
 ## Features
 
 - Real-address-first dataset generation. The generator samples reference,
   positive, no-match, and adversarial examples from loaded real address source
   records instead of inventing synthetic addresses.
+- Bring-your-own address CSV training. Generic CSVs can use either structured
+  columns or a single `full_address`/`address` column with optional
+  `city`/`state`/`zip` columns.
 - Mississippi source ingestion from MARIS parcel situs data, public MARIS point
   addressing ZIPs, OpenAddresses processed extracts, OpenAddresses source
   services, NAD text exports, and manual verified supplements.
@@ -52,14 +56,26 @@ Then open `http://127.0.0.1:8765`.
 - `src/address_resolver.py` - Stage 1 resolver, Stage 2 model, metrics, and
   CLI entry points.
 - `src/resolver_app.py` - local web app and reference-cache builder.
+- `src/train_from_addresses.py` - one-command dataset generation and model
+  training for custom address CSVs.
 - `models/` - small checked-in Stage 2 model JSON artifacts.
+- `examples/` - a small demo reference set and custom-address CSV example for
+  fresh clones.
 - `tests/` - regression tests for source parsing, resolver behavior, metrics,
   generator noise, ZIP/city enrichment, and OpenAddresses direct caching.
 
 Generated `datasets/` and `runs/` directories are intentionally ignored by git.
 They can be several GB because they contain downloaded public source archives,
-normalized caches, full reference CSVs, and prediction outputs. Rebuild local
-data with the commands below instead of committing generated artifacts.
+normalized caches, full reference CSVs, and prediction outputs. The repository
+includes the pretrained model at `models/stage2_model.json` and a tiny demo
+reference set at `examples/demo_reference/reference_addresses.csv`; rebuild
+larger local data with the commands below instead of committing generated
+artifacts.
+
+If `datasets/ms_full_reference/reference_addresses.csv` is missing, the local
+app automatically falls back to `examples/demo_reference` so a fresh clone can
+still run. That demo is intentionally small and is not the Mississippi-wide
+reference cache.
 
 ## Real Mississippi Address Data
 
@@ -176,6 +192,43 @@ real address pool. Query strings may still contain typos, missing fields, or
 other resolver noise, but those variants are derived from real source records.
 If the real source pool is too small, generation fails instead of inventing
 replacement addresses.
+
+## Train On Your Own Addresses
+
+Ady Resolver is not locked to Mississippi. The checked-in model is a Mississippi
+pretrained model, but the training pipeline can build a new model from any
+address source you provide. The easiest path is a CSV with one of these shapes:
+
+```csv
+full_address
+"101 Candace St, Newton, MS 39345"
+```
+
+or structured columns:
+
+```csv
+house_number,street_name,street_type,city,state,zip_code
+101,Candace,ST,Newton,MS,39345
+```
+
+One-command custom training:
+
+```bash
+python3 src/train_from_addresses.py \
+  --address-input examples/custom_addresses.csv \
+  --address-format generic \
+  --state MS \
+  --reference-size 4 \
+  --noisy-per-reference 2 \
+  --model-path models/custom_stage2_model.json \
+  --work-dir datasets/custom_training \
+  --run-dir runs/custom_training
+```
+
+For larger address lists, raise `--reference-size` and keep
+`--noisy-per-reference` high enough to create the typo patterns you care about.
+The resulting model can be passed to the app with `--model-path`, and the app
+can use any reference directory containing a `reference_addresses.csv`.
 
 Important coverage note: no open public web download tested here proves every
 current Mississippi address is present. The generator's

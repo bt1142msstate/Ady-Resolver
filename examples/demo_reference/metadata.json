@@ -1,0 +1,7 @@
+{
+  "address_source": "demo",
+  "source_format": "generic",
+  "state": "MS",
+  "reference_records": 12,
+  "note": "Small checked-in demo reference set for fresh clones. Build or supply a larger real reference cache for production use."
+}

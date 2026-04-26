@@ -7,7 +7,14 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = PROJECT_ROOT / "src"
 sys.path.insert(0, str(SRC_DIR))
 
-from address_dataset_generator import clean_house_number, canonical_address, maris_row_to_record, parse_street_line  # noqa: E402
+from address_dataset_generator import (  # noqa: E402
+    canonical_address,
+    clean_house_number,
+    maris_row_to_record,
+    parse_street_line,
+    real_row_to_record,
+    row_format,
+)
 
 
 class SourceParsingTests(unittest.TestCase):
@@ -195,6 +202,38 @@ class SourceParsingTests(unittest.TestCase):
         self.assertEqual("Cherry", street_name)
         self.assertEqual("CV", street_type)
         self.assertEqual("", suffixdir)
+
+    def test_generic_full_address_column_is_auto_detected(self) -> None:
+        self.assertEqual("generic", row_format(["full_address"], "auto"))
+
+    def test_generic_full_address_column_is_parsed(self) -> None:
+        row = {"full_address": "101 Candace St, Newton, MS 39345"}
+
+        record = real_row_to_record(row, "generic", "REAL_TEST", "MS")
+
+        self.assertIsNotNone(record)
+        self.assertEqual("101 CANDACE ST, NEWTON MS 39345", canonical_address(record))
+
+    def test_generic_address_with_locality_columns_is_parsed(self) -> None:
+        row = {
+            "address": "385 College View Dr",
+            "city": "Starkville",
+            "state": "MS",
+            "zip": "39759",
+        }
+
+        record = real_row_to_record(row, "generic", "REAL_TEST", "MS")
+
+        self.assertIsNotNone(record)
+        self.assertEqual("385 COLLEGE VIEW DR, STARKVILLE MS 39759", canonical_address(record))
+
+    def test_generic_uncommaed_address_splits_city_after_street_type(self) -> None:
+        row = {"address": "306 Clark Ave Newton MS 39345"}
+
+        record = real_row_to_record(row, "generic", "REAL_TEST", "MS")
+
+        self.assertIsNotNone(record)
+        self.assertEqual("306 CLARK AVE, NEWTON MS 39345", canonical_address(record))
 
 
 if __name__ == "__main__":

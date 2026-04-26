@@ -45,13 +45,19 @@ from typing import Callable, Dict, Iterable, Iterator, List, Optional, Sequence,
 
 STATE_ABBREV_TO_NAME: Dict[str, str] = {
     "AL": "ALABAMA",
+    "AK": "ALASKA",
     "AR": "ARKANSAS",
     "AZ": "ARIZONA",
     "CA": "CALIFORNIA",
     "CO": "COLORADO",
+    "CT": "CONNECTICUT",
     "DC": "DISTRICT OF COLUMBIA",
+    "DE": "DELAWARE",
     "FL": "FLORIDA",
     "GA": "GEORGIA",
+    "HI": "HAWAII",
+    "IA": "IOWA",
+    "ID": "IDAHO",
     "IL": "ILLINOIS",
     "IN": "INDIANA",
     "KS": "KANSAS",
@@ -61,19 +67,37 @@ STATE_ABBREV_TO_NAME: Dict[str, str] = {
     "MN": "MINNESOTA",
     "MO": "MISSOURI",
     "MS": "MISSISSIPPI",
+    "MT": "MONTANA",
     "NC": "NORTH CAROLINA",
+    "ND": "NORTH DAKOTA",
+    "NE": "NEBRASKA",
+    "NH": "NEW HAMPSHIRE",
+    "NJ": "NEW JERSEY",
+    "NM": "NEW MEXICO",
     "NV": "NEVADA",
     "NY": "NEW YORK",
     "OH": "OHIO",
     "OK": "OKLAHOMA",
     "OR": "OREGON",
     "PA": "PENNSYLVANIA",
+    "RI": "RHODE ISLAND",
+    "SC": "SOUTH CAROLINA",
+    "SD": "SOUTH DAKOTA",
     "TN": "TENNESSEE",
     "TX": "TEXAS",
+    "UT": "UTAH",
+    "VA": "VIRGINIA",
+    "VT": "VERMONT",
     "WA": "WASHINGTON",
     "WI": "WISCONSIN",
+    "WV": "WEST VIRGINIA",
+    "WY": "WYOMING",
 }
 STATE_NAME_TO_ABBREV: Dict[str, str] = {name: abbrev for abbrev, name in STATE_ABBREV_TO_NAME.items()}
+STATE_NAME_TOKEN_TO_ABBREV: Dict[str, str] = {
+    re.sub(r"[^A-Z0-9]+", "", name): abbrev
+    for abbrev, name in STATE_ABBREV_TO_NAME.items()
+}
 
 STREET_TYPE_TO_FULL: Dict[str, str] = {
     "ALY": "ALLEY",
@@ -141,6 +165,23 @@ OPENADDRESSES_DIRECT_FULL_ADDRESS_FALLBACK_FIELDS = (
     "SITEADD",
     "SITUS_ADDR",
 )
+GENERIC_FULL_ADDRESS_FIELDS = (
+    "full_address",
+    "fulladdr",
+    "full_addr",
+    "street_address",
+    "address",
+    "address1",
+    "address_line_1",
+    "line1",
+    "addr",
+    "situs_address",
+    "site_address",
+    "property_address",
+)
+GENERIC_CITY_FIELDS = ("city", "locality", "municipality", "post_city", "postal_city")
+GENERIC_STATE_FIELDS = ("state", "region", "province")
+GENERIC_ZIP_FIELDS = ("zip_code", "zipcode", "zip", "postcode", "postal_code")
 MARIS_POINT_ADDRESSES_URL = "https://maris.mississippi.edu/HTML/DATA/data_Cadastral/PointAddressesCounty.html"
 MARIS_POINT_ADDRESS_ZIP_RE = re.compile(
     r'https://maris\.mississippi\.edu/MARISdata/CadastralPLSS/MS_PointAddressing_Shared/[^"]+PointAd{1,2}resses?[^"]+\.zip',
@@ -600,7 +641,7 @@ def canonical_state(value: object) -> str:
     token = clean_real_token(value)
     if len(token) == 2 and token in STATE_ABBREV_TO_NAME:
         return token
-    return STATE_NAME_TO_ABBREV.get(token, token if len(token) == 2 else "")
+    return STATE_NAME_TO_ABBREV.get(token, STATE_NAME_TOKEN_TO_ABBREV.get(token, ""))
 
 
 def normalize_county_name(value: str) -> str:
@@ -799,6 +840,81 @@ def parse_street_line(street: object) -> Tuple[str, str, str, str]:
         street_name = cleaned
     street_name = strip_duplicate_terminal_street_type(street_name, street_type)
     return predir, street_name, street_type or canonical_street_type(""), suffixdir
+
+
+def strip_trailing_zip_and_state(text: str, state: str, zip_code: str) -> Tuple[str, str, str]:
+    remainder = clean_real_value(text).strip(" ,")
+    zip_match = re.search(r"(?:^|[\s,])(\d{5})(?:-\d{4})?\s*$", remainder)
+    if zip_match:
+        zip_code = zip_code or zip_match.group(1)
+        remainder = remainder[: zip_match.start()].strip(" ,")
+
+    tokens = remainder.split()
+    for width in range(min(3, len(tokens)), 0, -1):
+        candidate = " ".join(tokens[-width:])
+        candidate_state = canonical_state(candidate)
+        if not candidate_state:
+            continue
+        state = state or candidate_state
+        remainder = " ".join(tokens[:-width]).strip(" ,")
+        break
+
+    return remainder, state, zip_code
+
+
+def split_city_from_uncommaed_address(text: str) -> Tuple[str, str]:
+    house_number, street_line = split_house_number_from_street(text)
+    if not house_number:
+        return text, ""
+
+    tokens = street_line.split()
+    for idx in range(len(tokens) - 1, -1, -1):
+        if not canonical_street_type(tokens[idx]):
+            continue
+        city_tokens = tokens[idx + 1:]
+        if not city_tokens:
+            return text, ""
+        street_tokens = tokens[: idx + 1]
+        return f"{house_number} {' '.join(street_tokens)}", clean_city_candidate(" ".join(city_tokens))
+    return text, ""
+
+
+def parse_generic_full_address(
+    full_address: str,
+    city: str,
+    state: str,
+    zip_code: str,
+) -> Tuple[str, str, str, str, str, str, str]:
+    parts = [part.strip() for part in clean_real_value(full_address).split(",") if part.strip()]
+    if not parts:
+        return "", "", "", "", city, state, zip_code
+
+    street_line = parts[0]
+    locality_parts = parts[1:]
+    if locality_parts:
+        if len(locality_parts) >= 2 and not city:
+            city = clean_city_candidate(locality_parts[-2])
+        tail = locality_parts[-1]
+        tail, state, zip_code = strip_trailing_zip_and_state(tail, state, zip_code)
+        if tail and not city:
+            city = clean_city_candidate(tail)
+    else:
+        stripped, state, zip_code = strip_trailing_zip_and_state(street_line, state, zip_code)
+        if stripped != street_line:
+            street_line = stripped
+        if not city:
+            street_line, city = split_city_from_uncommaed_address(street_line)
+
+    if city:
+        city_tokens = clean_city_candidate(city).split()
+        street_tokens = street_line.split()
+        if city_tokens and len(street_tokens) > len(city_tokens):
+            if [token.upper() for token in street_tokens[-len(city_tokens):]] == [token.upper() for token in city_tokens]:
+                street_line = " ".join(street_tokens[:-len(city_tokens)])
+
+    house_number, street_value = split_house_number_from_street(street_line)
+    predir, street_name, street_type, suffixdir = parse_street_line(street_value)
+    return house_number, predir, street_name, street_type, suffixdir, city, state, zip_code
 
 
 def shift_house_number(value: str, rng: random.Random) -> str:
@@ -1070,6 +1186,8 @@ def row_format(fieldnames: Sequence[str], requested_format: str) -> str:
         return "maris"
     if {"house_number", "street_name", "state"}.issubset(lower_fields):
         return "address_record"
+    if any(field in lower_fields for field in GENERIC_FULL_ADDRESS_FIELDS):
+        return "generic"
     return "openaddresses"
 
 
@@ -1198,21 +1316,56 @@ def nad_row_to_record(row: Dict[str, str], address_id: str, state_filter: str) -
 
 
 def address_record_row_to_record(row: Dict[str, str], address_id: str, state_filter: str) -> Optional[AddressRecord]:
-    state = canonical_state(dict_get(row, "state"))
-    if state_filter and state != state_filter:
+    state = canonical_state(dict_get(row, *GENERIC_STATE_FIELDS))
+    if state_filter and state and state != state_filter:
         return None
+    state = state or state_filter
+    city = dict_get_place_name(row, *GENERIC_CITY_FIELDS)
+    zip_code = clean_zip_code(dict_get(row, *GENERIC_ZIP_FIELDS))
+    house_number = clean_house_number(dict_get(row, "house_number", "number", "addr_num", "address_number"))
+    predir = canonical_direction(dict_get(row, "predir", "pre_dir", "prefix_direction"))
+    street_name = clean_street_name(dict_get(row, "street_name", "road_name", "name"))
+    street_type = canonical_street_type(dict_get(row, "street_type", "road_type", "type")) or clean_real_token(dict_get(row, "street_type", "road_type", "type"))
+    suffixdir = canonical_direction(dict_get(row, "suffixdir", "sufdir", "post_dir", "suffix_direction"))
+    unit_type = canonical_unit_type(dict_get(row, "unit_type"))
+    unit_value = clean_real_value(dict_get(row, "unit_value", "unit", "suite", "apt")).upper()[:24]
+
+    full_address = clean_real_value(dict_get(row, *GENERIC_FULL_ADDRESS_FIELDS))
+    if full_address and (not house_number or not street_name):
+        (
+            parsed_house_number,
+            parsed_predir,
+            parsed_street_name,
+            parsed_street_type,
+            parsed_suffixdir,
+            parsed_city,
+            parsed_state,
+            parsed_zip_code,
+        ) = parse_generic_full_address(full_address, city, state, zip_code)
+        house_number = house_number or parsed_house_number
+        predir = predir or parsed_predir
+        street_name = street_name or parsed_street_name
+        street_type = street_type or parsed_street_type
+        suffixdir = suffixdir or parsed_suffixdir
+        city = city or parsed_city
+        state = state or parsed_state
+        zip_code = zip_code or parsed_zip_code
+
+    if state_filter and state and state != state_filter:
+        return None
+
     record = AddressRecord(
         address_id=address_id,
-        house_number=clean_house_number(dict_get(row, "house_number")),
-        predir=canonical_direction(dict_get(row, "predir")),
-        street_name=clean_street_name(dict_get(row, "street_name")),
-        street_type=canonical_street_type(dict_get(row, "street_type")) or clean_real_token(dict_get(row, "street_type")),
-        suffixdir=canonical_direction(dict_get(row, "suffixdir")),
-        unit_type=canonical_unit_type(dict_get(row, "unit_type")),
-        unit_value=clean_real_value(dict_get(row, "unit_value")).upper()[:24],
-        city=dict_get_place_name(row, "city"),
+        house_number=house_number,
+        predir=predir,
+        street_name=street_name,
+        street_type=street_type,
+        suffixdir=suffixdir,
+        unit_type=unit_type,
+        unit_value=unit_value,
+        city=city,
         state=state,
-        zip_code=clean_zip_code(dict_get(row, "zip_code")),
+        zip_code=zip_code,
     )
     if not record.house_number or not record.street_name or not record.state:
         return None
@@ -1400,7 +1553,7 @@ def real_row_to_record(row: Dict[str, str], source_format: str, address_id: str,
         record = maris_row_to_record(row, address_id, state_filter)
     elif source_format == "maris_parcels":
         record = maris_parcel_row_to_record(row, address_id, state_filter)
-    elif source_format == "address_record":
+    elif source_format in {"address_record", "generic"}:
         record = address_record_row_to_record(row, address_id, state_filter)
     else:
         record = openaddresses_row_to_record(row, address_id, state_filter)
@@ -3185,13 +3338,13 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         action="append",
         default=[],
-        help="File or directory of real addresses. Supports MARIS/MS811 shapefile ZIP/DBF, MARIS parcel CSV, OpenAddresses CSV, USDOT NAD text, and this generator's reference CSV schema.",
+        help="File or directory of real addresses. Supports MARIS/MS811 shapefile ZIP/DBF, MARIS parcel CSV, OpenAddresses CSV, USDOT NAD text, generic address CSVs, and this generator's reference CSV schema.",
     )
     parser.add_argument(
         "--real-address-format",
-        choices=["auto", "maris", "maris_parcels", "nad", "openaddresses", "address_record"],
+        choices=["auto", "maris", "maris_parcels", "nad", "openaddresses", "address_record", "generic"],
         default="auto",
-        help="Input schema for --real-address-input. The default auto-detects common schemas.",
+        help="Input schema for --real-address-input. Use generic for a bring-your-own CSV with full_address/address plus city/state/zip columns.",
     )
     parser.add_argument(
         "--real-address-state",

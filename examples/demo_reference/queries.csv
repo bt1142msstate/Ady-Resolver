@@ -1,0 +1,9 @@
+query_id,split,label,true_match_id,query_address,canonical_address
+DEMO_Q000001,test,1,DEMO_000001,101 candoose st newtooon MS,"101 CANDACE ST, NEWTON MS 39345"
+DEMO_Q000002,test,1,DEMO_000002,102 candace st newton ms,"102 CANDACE ST, NEWTON MS 39345"
+DEMO_Q000003,test,1,DEMO_000003,306 clarke ave newton,"306 CLARK AVE, NEWTON MS 39345"
+DEMO_Q000004,test,1,DEMO_000004,385 colage view drive starkvile,"385 COLLEGE VIEW DR, STARKVILLE MS 39759"
+DEMO_Q000005,test,1,DEMO_000005,419 west pl madison MS,"419 WEST PL, MADISON MS 39110"
+DEMO_Q000006,test,1,DEMO_000006,34 john henry ln starkvilee ms,"34 JOHN HENRY LN, STARKVILLE MS 39759"
+DEMO_Q000007,test,0,,999 missing rd newton ms,NO_MATCH
+DEMO_Q000008,test,0,,1 fake plaza starkville ms,NO_MATCH
