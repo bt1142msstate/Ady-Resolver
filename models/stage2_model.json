@@ -1,105 +1,110 @@
 {
   "model": {
     "weights": [
-      -16.448925104173334,
-      14.247047792886661,
-      3.3755328570181025,
-      0.0037560722007431826,
-      -0.7423857120460953,
-      1.2220473504241305,
-      0.5800943060322701,
-      0.18952681635141494,
-      0.1886512119167972,
-      0.554901525067687,
-      1.0909889795238876,
-      0.36814150324749795,
-      0.0,
-      -0.04461111963424544,
-      -1.0334617131722246,
-      -1.163948664081642,
-      2.838542831058772,
-      -0.7313946735555009,
-      0.5082682310353286,
-      0.28224158438160385,
-      0.0801747372414706,
-      2.6533151731338247,
-      0.81747199058784
+      -17.06698342109676,
+      12.428309538475801,
+      2.8082864803921987,
+      -0.356145545640748,
+      -0.7534586712170015,
+      2.8444946494042505,
+      0.052958539755996445,
+      0.5296057711722245,
+      0.09181956245019568,
+      0.5970741671662414,
+      1.2237600428899305,
+      0.27713165553726316,
+      5.077869271295,
+      3.367229618616176,
+      -0.5778720515468004,
+      -0.48958343597246945,
+      -0.21192485785738138,
+      -0.2199158430061356,
+      0.45634742269453055,
+      1.0017859170230567,
+      0.14143435483643005,
+      1.8840002404207574,
+      2.278533308309261,
+      0.24606946367930277,
+      -0.025976445718047126,
+      0.08744579010279856,
+      -0.8973913937280853,
+      -1.890148706242166
     ],
     "accept_tree": {
       "leaf": false,
       "feature_idx": 13,
-      "threshold": 0.7188798014821003,
+      "threshold": 0.6771162282288435,
       "left": {
         "leaf": false,
         "feature_idx": 14,
-        "threshold": 0.3812013512311523,
+        "threshold": 0.3984628783085383,
         "left": {
           "leaf": false,
           "feature_idx": 14,
-          "threshold": 0.14081672274960655,
+          "threshold": 0.18639406784231854,
           "left": {
             "leaf": false,
-            "feature_idx": 0,
-            "threshold": 0.868421052631579,
+            "feature_idx": 14,
+            "threshold": 0.057874956558827795,
             "left": {
               "leaf": true,
-              "probability": 0.013567710555508148,
-              "count": 11719
+              "probability": 0.01134358457272498,
+              "count": 7934
             },
             "right": {
               "leaf": true,
-              "probability": 0.1688888888888889,
-              "count": 225
+              "probability": 0.06401291016675632,
+              "count": 3718
             }
           },
           "right": {
             "leaf": false,
-            "feature_idx": 0,
-            "threshold": 0.64,
+            "feature_idx": 4,
+            "threshold": 0.76,
             "left": {
               "leaf": true,
-              "probability": 0.07440212577502214,
-              "count": 1129
+              "probability": 0.312,
+              "count": 750
             },
             "right": {
               "leaf": true,
-              "probability": 0.28003314001657,
-              "count": 1207
+              "probability": 0.11291413116970926,
+              "count": 1479
             }
           }
         },
         "right": {
           "leaf": false,
-          "feature_idx": 14,
-          "threshold": 0.5042573035407321,
+          "feature_idx": 19,
+          "threshold": 0.8,
           "left": {
             "leaf": false,
-            "feature_idx": 3,
-            "threshold": 0.5714285714285714,
+            "feature_idx": 15,
+            "threshold": 0.25,
             "left": {
               "leaf": true,
-              "probability": 0.33,
-              "count": 200
+              "probability": 0.2982456140350877,
+              "count": 57
             },
             "right": {
               "leaf": true,
-              "probability": 0.5616438356164384,
-              "count": 438
+              "probability": 0.6828193832599119,
+              "count": 454
             }
           },
           "right": {
             "leaf": false,
             "feature_idx": 1,
-            "threshold": 0.6451612903225806,
+            "threshold": 0.5,
             "left": {
               "leaf": true,
-              "probability": 0.8557692307692307,
-              "count": 416
+              "probability": 0.6111111111111112,
+              "count": 162
             },
             "right": {
               "leaf": true,
-              "probability": 0.6075949367088608,
-              "count": 237
+              "probability": 0.22342342342342342,
+              "count": 555
             }
           }
         }
@@ -107,64 +112,74 @@
       "right": {
         "leaf": false,
         "feature_idx": 13,
-        "threshold": 0.8593128536513301,
+        "threshold": 0.8824862778094863,
         "left": {
           "leaf": false,
           "feature_idx": 14,
-          "threshold": 0.44294790514611143,
+          "threshold": 0.3103569429317784,
           "left": {
             "leaf": false,
             "feature_idx": 14,
-            "threshold": 0.35367567533729294,
+            "threshold": 0.07757785231474512,
             "left": {
               "leaf": true,
-              "probability": 0.2640449438202247,
-              "count": 178
+              "probability": 0.09293680297397769,
+              "count": 269
             },
             "right": {
               "leaf": true,
-              "probability": 0.5272727272727272,
-              "count": 55
+              "probability": 0.3953488372093023,
+              "count": 387
             }
           },
           "right": {
             "leaf": false,
-            "feature_idx": 14,
-            "threshold": 0.6681282983918273,
+            "feature_idx": 19,
+            "threshold": 0.8,
             "left": {
               "leaf": true,
-              "probability": 0.7316176470588235,
-              "count": 272
+              "probability": 0.8387942332896461,
+              "count": 1526
             },
             "right": {
               "leaf": true,
-              "probability": 0.9340659340659341,
-              "count": 819
+              "probability": 0.6474820143884892,
+              "count": 1390
             }
           }
         },
         "right": {
           "leaf": false,
-          "feature_idx": 4,
-          "threshold": 0.96,
+          "feature_idx": 13,
+          "threshold": 0.9659200098403073,
           "left": {
-            "leaf": true,
-            "probability": 0.7272727272727273,
-            "count": 77
-          },
-          "right": {
             "leaf": false,
             "feature_idx": 14,
-            "threshold": 0.44142371119650015,
+            "threshold": 0.3127266752854774,
             "left": {
               "leaf": true,
-              "probability": 0.9525919361984936,
-              "count": 2257
+              "probability": 0.5893186003683242,
+              "count": 543
             },
             "right": {
               "leaf": true,
-              "probability": 0.9974432310625758,
-              "count": 23076
+              "probability": 0.9181834896120611,
+              "count": 5439
+            }
+          },
+          "right": {
+            "leaf": false,
+            "feature_idx": 13,
+            "threshold": 0.9827192320377852,
+            "left": {
+              "leaf": true,
+              "probability": 0.958984375,
+              "count": 4096
+            },
+            "right": {
+              "leaf": true,
+              "probability": 0.9906983611398199,
+              "count": 13546
             }
           }
         }
@@ -175,61 +190,62 @@
       "base": {
         "training_queries": 42305,
         "positive_queries": 28320,
-        "rough_hard_negative_rows": 27905,
-        "rough_hard_negatives": 110555,
-        "forced_positive_candidates": 495,
+        "rough_hard_negative_rows": 27562,
+        "rough_hard_negatives": 107748,
+        "forced_positive_candidates": 1743,
         "negative_queries": 13985,
-        "pair_rows": 27905,
-        "calibration_rows": 111719
+        "pair_rows": 27562,
+        "calibration_rows": 110371
       },
       "mined": {
         "mined_queries_with_candidates": 42305,
-        "mined_positive_negative_calibration_rows": 8167,
-        "mined_pair_rows": 5359,
-        "mined_positive_hard_negatives": 9899,
-        "first_pass_positive_rank_errors": 590,
-        "mined_no_match_calibration_rows": 3618,
-        "pair_rows": 5359,
-        "calibration_rows": 11785
+        "mined_positive_negative_calibration_rows": 15909,
+        "mined_pair_rows": 10068,
+        "mined_positive_hard_negatives": 21454,
+        "first_pass_positive_rank_errors": 1958,
+        "mined_no_match_calibration_rows": 7473,
+        "pair_rows": 10068,
+        "calibration_rows": 23382
       },
-      "final_pair_rows": 33264,
-      "final_calibration_rows": 123504,
+      "final_pair_rows": 37630,
+      "final_calibration_rows": 133753,
       "accept_rows": 42305
     }
   },
-  "accept_threshold": 0.34,
-  "review_threshold": 0.86,
+  "accept_threshold": 0.4,
+  "review_threshold": 0.99,
   "metadata": {
-    "train_dataset_dir": "/Users/brandont/Documents/Ady Resolver/datasets/fresh_60k_compound/train_dataset",
-    "eval_dataset_dir": "/Users/brandont/Documents/Ady Resolver/datasets/fresh_60k_compound/eval_dataset",
+    "train_dataset_dir": "/Users/brandont/Documents/Ady Resolver/datasets/fresh_60k_active_v2/train_dataset",
+    "eval_dataset_dir": "/Users/brandont/Documents/Ady Resolver/datasets/fresh_60k_active_v2/eval_dataset",
     "query_count": 60000,
     "reference_count": 5000,
     "train_query_count": 42305,
     "calibration_query_count": 8845,
+    "active_learning_feedback": [],
     "stage2_training": {
       "hard_negative_mining": true,
       "base": {
         "training_queries": 42305,
         "positive_queries": 28320,
-        "rough_hard_negative_rows": 27905,
-        "rough_hard_negatives": 110555,
-        "forced_positive_candidates": 495,
+        "rough_hard_negative_rows": 27562,
+        "rough_hard_negatives": 107748,
+        "forced_positive_candidates": 1743,
         "negative_queries": 13985,
-        "pair_rows": 27905,
-        "calibration_rows": 111719
+        "pair_rows": 27562,
+        "calibration_rows": 110371
       },
       "mined": {
         "mined_queries_with_candidates": 42305,
-        "mined_positive_negative_calibration_rows": 8167,
-        "mined_pair_rows": 5359,
-        "mined_positive_hard_negatives": 9899,
-        "first_pass_positive_rank_errors": 590,
-        "mined_no_match_calibration_rows": 3618,
-        "pair_rows": 5359,
-        "calibration_rows": 11785
+        "mined_positive_negative_calibration_rows": 15909,
+        "mined_pair_rows": 10068,
+        "mined_positive_hard_negatives": 21454,
+        "first_pass_positive_rank_errors": 1958,
+        "mined_no_match_calibration_rows": 7473,
+        "pair_rows": 10068,
+        "calibration_rows": 23382
       },
-      "final_pair_rows": 33264,
-      "final_calibration_rows": 123504,
+      "final_pair_rows": 37630,
+      "final_calibration_rows": 133753,
       "accept_rows": 42305
     }
   }

@@ -80,6 +80,7 @@ class ReferenceAddress:
     zip_code: str
     standardized_address: str
     street_signature: str
+    source_quality: float = 0.5
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,6 +155,38 @@ class Stage2TrainingRows:
     stats: Dict[str, int]
 
 
+STAGE2_FEATURE_NAMES = (
+    "bias",
+    "full_similarity",
+    "street_name_similarity",
+    "street_signature_overlap",
+    "city_similarity",
+    "house_similarity",
+    "zip_exact",
+    "zip_prefix",
+    "type_exact",
+    "type_missing",
+    "predir_exact",
+    "suffixdir_exact",
+    "unit_exact",
+    "unit_missing",
+    "state_exact",
+    "city_state_exact",
+    "house_exact",
+    "street_exact",
+    "locality_corrected",
+    "missing_city",
+    "missing_state",
+    "missing_zip",
+    "rough",
+    "street_phonetic_similarity",
+    "city_phonetic_similarity",
+    "zip_city_consistency",
+    "house_mismatch_strong_context",
+    "source_quality",
+)
+
+
 def normalize_text(text: str) -> str:
     text = text.upper().replace("/", " ").replace("-", " ")
     text = PUNCT_RE.sub(" ", text)
@@ -220,6 +253,44 @@ def token_overlap(left: str, right: str) -> float:
     if not left_tokens or not right_tokens:
         return 0.0
     return len(left_tokens & right_tokens) / len(left_tokens | right_tokens)
+
+
+def soundex_token(token: str) -> str:
+    token = re.sub(r"[^A-Z]+", "", normalize_text(token))
+    if not token:
+        return ""
+    groups = {
+        **dict.fromkeys("BFPV", "1"),
+        **dict.fromkeys("CGJKQSXZ", "2"),
+        **dict.fromkeys("DT", "3"),
+        "L": "4",
+        **dict.fromkeys("MN", "5"),
+        "R": "6",
+    }
+    first = token[0]
+    encoded = []
+    previous = groups.get(first, "")
+    for char in token[1:]:
+        code = groups.get(char, "")
+        if code and code != previous:
+            encoded.append(code)
+        previous = code
+    return (first + "".join(encoded) + "000")[:4]
+
+
+@lru_cache(maxsize=100_000)
+def phonetic_signature(text: str) -> str:
+    return " ".join(code for code in (soundex_token(token) for token in TOKEN_RE.findall(text)) if code)
+
+
+def phonetic_similarity(left: str, right: str) -> float:
+    left_signature = phonetic_signature(left)
+    right_signature = phonetic_signature(right)
+    if not left_signature and not right_signature:
+        return 1.0
+    if not left_signature or not right_signature:
+        return 0.0
+    return sequence_similarity(left_signature, right_signature)
 
 
 def numeric_similarity(left: str, right: str) -> float:
@@ -371,6 +442,10 @@ def load_reference(path: Path) -> Tuple[List[ReferenceAddress], Dict[str, Refere
     with path.open(newline="", encoding="utf-8") as handle:
         reader = csv.DictReader(handle)
         for row in reader:
+            try:
+                source_quality = float(row.get("source_quality", "") or 0.5)
+            except ValueError:
+                source_quality = 0.5
             standardized = standardize_parts(
                 row["house_number"].upper(),
                 row["predir"].upper(),
@@ -400,6 +475,7 @@ def load_reference(path: Path) -> Tuple[List[ReferenceAddress], Dict[str, Refere
                 street_signature=" ".join(
                     bit for bit in [row["predir"].upper(), normalize_text(row["street_name"]), row["street_type"].upper(), row["suffixdir"].upper()] if bit
                 ),
+                source_quality=max(0.0, min(1.0, source_quality)),
             )
             rows.append(record)
     return rows, {row.address_id: row for row in rows}
@@ -480,6 +556,92 @@ def load_queries(path: Path) -> List[QueryAddress]:
                 )
             )
     return rows
+
+
+def reference_canonical_index(reference_rows: Sequence[ReferenceAddress]) -> Dict[str, ReferenceAddress]:
+    return {normalize_text(row.canonical_address): row for row in reference_rows}
+
+
+def load_active_learning_feedback_queries(
+    path: Path,
+    reference_rows: Sequence[ReferenceAddress],
+) -> Tuple[List[QueryAddress], Dict[str, int]]:
+    stats = {
+        "rows_seen": 0,
+        "queries_added": 0,
+        "positive_queries_added": 0,
+        "negative_queries_added": 0,
+        "rows_skipped": 0,
+        "missing_reference_rows": 0,
+    }
+    if not path.exists():
+        return [], stats
+
+    by_id = {row.address_id: row for row in reference_rows}
+    by_canonical = reference_canonical_index(reference_rows)
+    queries: List[QueryAddress] = []
+
+    def lookup_reference(address_id: str, canonical: str) -> Optional[ReferenceAddress]:
+        if address_id and address_id in by_id:
+            return by_id[address_id]
+        return by_canonical.get(normalize_text(canonical)) if canonical else None
+
+    with path.open(newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        for row in reader:
+            stats["rows_seen"] += 1
+            feedback_type = row.get("feedback_type", "").strip()
+            query_address = row.get("input_address", "").strip()
+            if not query_address:
+                stats["rows_skipped"] += 1
+                continue
+
+            label = 0
+            true_match_id = ""
+            canonical = "NO_MATCH"
+            if feedback_type == "correction":
+                reference = lookup_reference(
+                    row.get("correct_reference_id", "").strip(),
+                    row.get("correct_canonical_address", "").strip() or row.get("correct_address", "").strip(),
+                )
+                if reference is None:
+                    stats["missing_reference_rows"] += 1
+                    continue
+                label = 1
+                true_match_id = reference.address_id
+                canonical = reference.canonical_address
+            elif feedback_type == "correct":
+                reference = lookup_reference(
+                    row.get("predicted_match_id", "").strip(),
+                    row.get("predicted_canonical_address", "").strip(),
+                )
+                if reference is not None:
+                    label = 1
+                    true_match_id = reference.address_id
+                    canonical = reference.canonical_address
+            elif feedback_type == "wrong":
+                pass
+            else:
+                stats["rows_skipped"] += 1
+                continue
+
+            queries.append(
+                QueryAddress(
+                    query_id=f"AL_{len(queries) + 1:07d}",
+                    split="train",
+                    label=label,
+                    true_match_id=true_match_id,
+                    query_address=query_address,
+                    canonical_address=canonical,
+                )
+            )
+            stats["queries_added"] += 1
+            if label:
+                stats["positive_queries_added"] += 1
+            else:
+                stats["negative_queries_added"] += 1
+
+    return queries, stats
 
 
 def build_city_lookup(reference_rows: Sequence[ReferenceAddress]) -> Dict[Tuple[str, ...], str]:
@@ -1127,6 +1289,8 @@ class Resolver:
             street_signature_overlap = token_overlap(variant.street_signature, candidate.street_signature)
             city_similarity = sequence_similarity(variant.city, candidate.city)
             house_similarity = numeric_similarity(variant.house_number, candidate.house_number)
+            street_phonetic_similarity = phonetic_similarity(variant.street_name, candidate.street_name)
+            city_phonetic_similarity = phonetic_similarity(variant.city, candidate.city)
             zip_exact = 1.0 if variant.zip_code and variant.zip_code == candidate.zip_code else 0.0
             zip_prefix = 1.0 if variant.zip_code[:3] and variant.zip_code[:3] == candidate.zip_code[:3] else 0.0
             type_exact = 1.0 if variant.street_type and variant.street_type == candidate.street_type else 0.0
@@ -1144,6 +1308,20 @@ class Resolver:
             missing_state = 1.0 if not variant.state else 0.0
             missing_zip = 1.0 if not variant.zip_code else 0.0
             rough = self.rough_score(variant, candidate)
+            localities_for_query_zip = self.zip_to_localities.get(variant.zip_code, set()) if variant.zip_code else set()
+            if localities_for_query_zip:
+                zip_city_consistency = 1.0 if (candidate.city, candidate.state) in localities_for_query_zip else 0.0
+            elif candidate.zip_code and variant.city and variant.state:
+                zip_city_consistency = 1.0 if (variant.city, variant.state) in self.zip_to_localities.get(candidate.zip_code, set()) else 0.0
+            else:
+                zip_city_consistency = 0.5
+            house_mismatch_strong_context = 1.0 if (
+                variant.house_number
+                and candidate.house_number
+                and variant.house_number != candidate.house_number
+                and max(street_name_similarity, street_phonetic_similarity) >= 0.88
+                and (city_similarity >= 0.86 or zip_exact)
+            ) else 0.0
 
             values = (
                 1.0,
@@ -1169,8 +1347,20 @@ class Resolver:
                 missing_state,
                 missing_zip,
                 rough,
+                street_phonetic_similarity,
+                city_phonetic_similarity,
+                zip_city_consistency,
+                house_mismatch_strong_context,
+                candidate.source_quality,
             )
-            key = (full_similarity + street_name_similarity + house_similarity + 0.5 * city_similarity, rough)
+            key = (
+                full_similarity
+                + max(street_name_similarity, 0.92 * street_phonetic_similarity)
+                + house_similarity
+                + 0.5 * max(city_similarity, 0.9 * city_phonetic_similarity)
+                - 0.2 * house_mismatch_strong_context,
+                rough,
+            )
             if key > best_key:
                 best_key = key
                 best_reason = variant_reason
@@ -1385,7 +1575,12 @@ class Stage2Model:
                 + 0.03 * values[14]
                 + 0.02 * values[15]
                 + 0.01 * best_score
-                + 0.01 * max(0.0, margin),
+                + 0.01 * max(0.0, margin)
+                + 0.04 * values[23]
+                + 0.02 * values[24]
+                + 0.03 * values[25]
+                + 0.02 * values[27]
+                - 0.12 * values[26]
             ),
         )
 
@@ -1407,6 +1602,11 @@ class Stage2Model:
             values[22],
             best_score,
             max(0.0, margin),
+            values[23],
+            values[24],
+            values[25],
+            values[26],
+            values[27],
         )
 
     def to_dict(self) -> Dict[str, object]:
@@ -1987,6 +2187,13 @@ def parse_args() -> argparse.Namespace:
         help="Optional full reference CSV to append to the eval reference set as live-scale distractors while preserving eval labels.",
     )
     parser.add_argument("--query-limit", type=int, help="Optional cap on eval queries for fast smoke runs.")
+    parser.add_argument(
+        "--active-learning-feedback-csv",
+        type=Path,
+        action="append",
+        default=[],
+        help="Append app feedback rows to Stage 2 training. May be repeated.",
+    )
     parser.add_argument("--output-dir", type=Path, default=Path.cwd() / "runs" / "resolver_output", help="Directory for predictions and evaluation reports.")
     parser.add_argument("--model-path", type=Path, default=Path.cwd() / "models" / "stage2_model.json", help="Path to saved Stage 2 model JSON.")
     parser.add_argument("--compare-variants", action="store_true", help="In predict mode, also compute stage2-only comparison metrics instead of only the combined pipeline.")
@@ -2007,6 +2214,7 @@ def main() -> None:
     )
     output_dir = args.output_dir.expanduser().resolve()
     model_path = args.model_path.expanduser().resolve()
+    active_learning_feedback_paths = [path.expanduser().resolve() for path in args.active_learning_feedback_csv]
     output_dir.mkdir(parents=True, exist_ok=True)
     if args.query_limit is not None and args.query_limit <= 0:
         raise SystemExit("--query-limit must be greater than zero.")
@@ -2014,6 +2222,12 @@ def main() -> None:
     if args.mode in {"train", "fit-predict"}:
         train_reference_rows, _ = load_reference(train_dataset_dir / "reference_addresses.csv")
         train_queries_all = load_queries(train_dataset_dir / "queries.csv")
+        active_learning_stats = []
+        for feedback_path in active_learning_feedback_paths:
+            feedback_queries, feedback_stats = load_active_learning_feedback_queries(feedback_path, train_reference_rows)
+            feedback_stats["path"] = str(feedback_path)
+            active_learning_stats.append(feedback_stats)
+            train_queries_all.extend(feedback_queries)
         train_city_lookup = build_city_lookup(train_reference_rows)
         train_resolver = Resolver(train_reference_rows, train_city_lookup)
         train_queries = [query for query in train_queries_all if query.split == "train"]
@@ -2041,6 +2255,7 @@ def main() -> None:
                 "reference_count": len(train_reference_rows),
                 "train_query_count": len(train_queries),
                 "calibration_query_count": len(calibration_queries),
+                "active_learning_feedback": active_learning_stats,
             },
         )
         print(f"Saved Stage 2 model to: {model_path}")

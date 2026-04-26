@@ -36,6 +36,7 @@ from collections import Counter, defaultdict
 from copy import deepcopy
 from dataclasses import dataclass, asdict
 from decimal import Decimal, InvalidOperation
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Callable, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
 
@@ -210,6 +211,8 @@ PLACE_NAME_PLACEHOLDERS = {
     "UNINCORPORATED",
     "OUTSIDE",
     "OTHER",
+    "MISSISSIPPI",
+    "MS",
 }
 KNOWN_STREET_NAME_CORRECTIONS = {
     ("MS", "39345", "NEWTON", "CLARKE", "AVE"): "Clark",
@@ -495,6 +498,7 @@ class AddressRecord:
     city: str
     state: str
     zip_code: str
+    source_quality: float = 0.5
 
 
 @dataclass
@@ -969,6 +973,16 @@ def mutate_alpha_token(token: str, rng: random.Random) -> str:
     return "".join(chars)
 
 
+def mutate_extra_or_missing_letter(token: str, rng: random.Random) -> str:
+    letters = [idx for idx, ch in enumerate(token) if ch.isalpha()]
+    if not letters:
+        return token
+    idx = rng.choice(letters)
+    if len(token) > 4 and rng.random() < 0.55:
+        return token[:idx] + token[idx + 1:]
+    return token[:idx] + token[idx] + token[idx:]
+
+
 def mutate_street_type_token(token: str, rng: random.Random) -> str:
     token = token.upper()
     choices = [choice for choice in STREET_TYPE_KEYBOARD_TYPOS.get(token, ()) if choice != token]
@@ -1189,6 +1203,22 @@ def row_format(fieldnames: Sequence[str], requested_format: str) -> str:
     if any(field in lower_fields for field in GENERIC_FULL_ADDRESS_FIELDS):
         return "generic"
     return "openaddresses"
+
+
+def source_quality_for_format(source_format: str) -> float:
+    if source_format == "address_record":
+        return 1.0
+    if source_format == "maris":
+        return 0.92
+    if source_format == "openaddresses":
+        return 0.86
+    if source_format == "generic":
+        return 0.80
+    if source_format == "nad":
+        return 0.76
+    if source_format == "maris_parcels":
+        return 0.62
+    return 0.50
 
 
 def dict_get(row: Dict[str, str], *names: str) -> str:
@@ -1560,6 +1590,7 @@ def real_row_to_record(row: Dict[str, str], source_format: str, address_id: str,
     if record and not zip_code_matches_state(record.zip_code, record.state):
         return None
     if record:
+        record.source_quality = source_quality_for_format(source_format)
         record = apply_known_address_corrections(record)
         record.street_name = strip_duplicate_terminal_street_type(record.street_name, record.street_type)
         street_line = " ".join(part for part in [record.street_name, record.street_type] if part)
@@ -2523,6 +2554,21 @@ def op_typo_city(record: AddressRecord, style: RenderStyle, rng: random.Random) 
     return "city_typo"
 
 
+def op_heavy_city_typo_no_state(record: AddressRecord, style: RenderStyle, rng: random.Random) -> Optional[str]:
+    if len(record.city.replace(" ", "")) < 5:
+        return None
+    original = record.city
+    for _ in range(rng.choice([2, 2, 3])):
+        op_typo_city(record, style, rng)
+    if record.city == original:
+        return None
+    record.state = ""
+    if rng.random() < 0.65:
+        record.zip_code = ""
+    style.include_commas = False
+    return "heavy_city_typo_no_state"
+
+
 def op_phonetic_city(record: AddressRecord, style: RenderStyle, rng: random.Random) -> Optional[str]:
     if len(record.city.replace(" ", "")) < 4:
         return None
@@ -2620,6 +2666,20 @@ def op_typo_street_type(record: AddressRecord, style: RenderStyle, rng: random.R
     return "street_type_typo"
 
 
+def op_extra_or_missing_street_letter(record: AddressRecord, style: RenderStyle, rng: random.Random) -> Optional[str]:
+    tokens = record.street_name.split()
+    candidates = [idx for idx, token in enumerate(tokens) if len(token) >= 5]
+    if not candidates:
+        return None
+    idx = rng.choice(candidates)
+    mutated = mutate_extra_or_missing_letter(tokens[idx], rng)
+    if mutated == tokens[idx]:
+        return None
+    tokens[idx] = mutated
+    record.street_name = " ".join(tokens)
+    return "street_letter_extra_missing"
+
+
 def op_compound_local_typo(record: AddressRecord, style: RenderStyle, rng: random.Random) -> Optional[str]:
     tags: List[str] = []
     for op in (op_typo_street, op_typo_street_type, op_typo_city):
@@ -2695,6 +2755,14 @@ def op_house_digit_error(record: AddressRecord, style: RenderStyle, rng: random.
     return "house_digit_error"
 
 
+def op_house_near_miss(record: AddressRecord, style: RenderStyle, rng: random.Random) -> Optional[str]:
+    shifted = shift_house_number(record.house_number, rng)
+    if shifted == record.house_number:
+        return None
+    record.house_number = shifted
+    return "house_near_miss"
+
+
 def op_zip_digit_error(record: AddressRecord, style: RenderStyle, rng: random.Random) -> Optional[str]:
     record.zip_code = mutate_numeric_token(record.zip_code, rng)
     return "zip_digit_error"
@@ -2739,7 +2807,9 @@ EASY_OPS: Sequence[Operation] = (
 MEDIUM_OPS: Sequence[Operation] = EASY_OPS + (
     op_typo_street,
     op_phonetic_street,
+    op_extra_or_missing_street_letter,
     op_typo_city,
+    op_heavy_city_typo_no_state,
     op_phonetic_city,
     op_ocr_street,
     op_ocr_locality,
@@ -2757,6 +2827,7 @@ MEDIUM_OPS: Sequence[Operation] = EASY_OPS + (
 
 HARD_OPS: Sequence[Operation] = MEDIUM_OPS + (
     op_compound_local_typo,
+    op_house_near_miss,
     op_house_digit_error,
     op_zip_digit_error,
 )
@@ -2811,6 +2882,24 @@ class Corruptor:
             pool = list(self.ops_for_difficulty(difficulty))
             self.rng.shuffle(pool)
             num_ops = min(self.difficulty_operation_count(difficulty), len(pool))
+
+            profile_probability = 0.72 if difficulty == "hard" else 0.38 if difficulty == "medium" else 0.0
+            if profile_probability and self.rng.random() < profile_probability:
+                profile_ops = [
+                    op_heavy_city_typo_no_state,
+                    op_phonetic_street,
+                    op_typo_street_type,
+                    op_extra_or_missing_street_letter,
+                    op_house_near_miss,
+                ]
+                self.rng.shuffle(profile_ops)
+                target_count = 2 if difficulty == "hard" and self.rng.random() < 0.55 else 1
+                for op in profile_ops:
+                    tag = self.apply_operation(op, record, style)
+                    if tag:
+                        tags.append(tag)
+                    if len(tags) >= target_count:
+                        break
 
             compound_probability = 0.45 if difficulty == "hard" else 0.18 if difficulty == "medium" else 0.0
             if compound_probability and self.rng.random() < compound_probability:
@@ -2873,6 +2962,7 @@ class DatasetBuilder:
         self.corruptor = Corruptor(self.rng, state_to_cities=self.real_state_to_cities())
         self._real_pool_order = list(self.real_address_pool)
         self.rng.shuffle(self._real_pool_order)
+        self.adversarial_reasons: Dict[str, str] = {}
 
     def real_state_to_cities(self) -> Dict[str, Sequence[str]]:
         cities_by_state: Dict[str, set[str]] = defaultdict(set)
@@ -2890,6 +2980,75 @@ class DatasetBuilder:
         if self.real_address_pool:
             return self.take_real_records(n, "NEG")
         raise RuntimeError("No real address pool was supplied for negative generation.")
+
+    def adversarial_neighbor_index(self, reference: Sequence[AddressRecord]) -> Dict[str, Dict[Tuple[str, ...], List[AddressRecord]]]:
+        indexes: Dict[str, Dict[Tuple[str, ...], List[AddressRecord]]] = {
+            "same_house_city": defaultdict(list),
+            "same_street_city": defaultdict(list),
+            "same_house_zip": defaultdict(list),
+            "same_street_zip": defaultdict(list),
+        }
+        for record in reference:
+            street_key = (record.predir, record.street_name, record.street_type, record.suffixdir)
+            if record.house_number and record.city and record.state:
+                indexes["same_house_city"][(record.house_number, record.city, record.state)].append(record)
+            if record.city and record.state and record.street_name:
+                indexes["same_street_city"][(*street_key, record.city, record.state)].append(record)
+            if record.house_number and record.zip_code:
+                indexes["same_house_zip"][(record.house_number, record.zip_code)].append(record)
+            if record.zip_code and record.street_name:
+                indexes["same_street_zip"][(*street_key, record.zip_code)].append(record)
+        return indexes
+
+    def candidate_reference_neighbors(
+        self,
+        candidate: AddressRecord,
+        indexes: Dict[str, Dict[Tuple[str, ...], List[AddressRecord]]],
+    ) -> List[Tuple[str, AddressRecord]]:
+        neighbors: List[Tuple[str, AddressRecord]] = []
+        street_key = (candidate.predir, candidate.street_name, candidate.street_type, candidate.suffixdir)
+        lookups = (
+            ("same_house_city", (candidate.house_number, candidate.city, candidate.state)),
+            ("same_street_city", (*street_key, candidate.city, candidate.state)),
+            ("same_house_zip", (candidate.house_number, candidate.zip_code)),
+            ("same_street_zip", (*street_key, candidate.zip_code)),
+        )
+        seen = set()
+        for reason, key in lookups:
+            if not all(key):
+                continue
+            for reference in indexes[reason].get(key, ()):
+                if reference.address_id in seen:
+                    continue
+                seen.add(reference.address_id)
+                neighbors.append((reason, reference))
+        return neighbors
+
+    def adversarial_neighbor_score(self, reference: AddressRecord, candidate: AddressRecord, reason: str) -> float:
+        street_similarity = SequenceMatcher(None, reference.street_name.upper(), candidate.street_name.upper()).ratio()
+        same_house = reference.house_number == candidate.house_number
+        same_city = bool(reference.city and reference.city == candidate.city and reference.state == candidate.state)
+        same_zip = bool(reference.zip_code and reference.zip_code == candidate.zip_code)
+        same_street = (
+            reference.predir == candidate.predir
+            and reference.street_name == candidate.street_name
+            and reference.street_type == candidate.street_type
+            and reference.suffixdir == candidate.suffixdir
+        )
+        house_gap = 999
+        if reference.house_number.isdigit() and candidate.house_number.isdigit():
+            house_gap = abs(int(reference.house_number) - int(candidate.house_number))
+
+        score = 0.0
+        if same_house and (same_city or same_zip):
+            score = max(score, 0.68 + 0.25 * street_similarity)
+        if same_street and (same_city or same_zip) and 0 < house_gap <= 20:
+            score = max(score, 0.76 + 0.20 * (1.0 - min(house_gap, 20) / 20.0))
+        if reason in {"same_house_city", "same_house_zip"} and street_similarity >= 0.45:
+            score = max(score, 0.55 + 0.35 * street_similarity)
+        if reason in {"same_street_city", "same_street_zip"} and 0 < house_gap <= 30:
+            score = max(score, 0.58 + 0.30 * (1.0 - min(house_gap, 30) / 30.0))
+        return score
 
     def take_real_records(self, n: int, prefix: str) -> List[AddressRecord]:
         results: List[AddressRecord] = []
@@ -2920,7 +3079,49 @@ class DatasetBuilder:
         extra_excluded: Sequence[AddressRecord] = (),
     ) -> List[AddressRecord]:
         if self.real_address_pool:
-            return self.take_real_records(n, "NEG_ADV")
+            indexes = self.adversarial_neighbor_index(reference)
+            excluded = {canonical_address(record) for record in reference}
+            excluded.update(canonical_address(record) for record in extra_excluded)
+            scored_candidates: List[Tuple[float, float, str, AddressRecord]] = []
+            seen_candidates = set()
+
+            for source in self._real_pool_order:
+                source_key = canonical_address(source)
+                if source_key in self.factory._seen_canonical or source_key in excluded or source_key in seen_candidates:
+                    continue
+                best_score = 0.0
+                best_reason = ""
+                for reason, neighbor in self.candidate_reference_neighbors(source, indexes):
+                    score = self.adversarial_neighbor_score(neighbor, source, reason)
+                    if score > best_score:
+                        best_score = score
+                        best_reason = reason
+                if best_score <= 0.0:
+                    continue
+                seen_candidates.add(source_key)
+                scored_candidates.append((best_score, self.rng.random(), best_reason, source))
+
+            scored_candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+            results: List[AddressRecord] = []
+            for _score, _tiebreaker, reason, source in scored_candidates:
+                if len(results) >= n:
+                    break
+                candidate = deepcopy(source)
+                candidate.address_id = f"NEG_ADV_{len(results) + 1:06d}"
+                key = canonical_address(candidate)
+                if key in self.factory._seen_canonical:
+                    continue
+                self.factory._seen_canonical.add(key)
+                self.adversarial_reasons[candidate.address_id] = f"near_neighbor_{reason}"
+                results.append(candidate)
+
+            if len(results) < n:
+                fallback = self.take_real_records(n - len(results), "NEG_ADV_FALLBACK")
+                for record in fallback:
+                    record.address_id = f"NEG_ADV_{len(results) + 1:06d}"
+                    self.adversarial_reasons[record.address_id] = "fallback_holdout"
+                    results.append(record)
+            return results
         raise RuntimeError("No real address pool was supplied for adversarial negative generation.")
 
     def planned_difficulties(self, count: int, negative: bool = False, adversarial: bool = False) -> List[str]:
@@ -3051,7 +3252,8 @@ class DatasetBuilder:
                 reference_query_index=reference_query_index,
                 force_difficulty="hard",
             )
-            combined_tags = "|".join(part for part in ["adversarial_base", tags] if part)
+            adversarial_reason = self.adversarial_reasons.get(record.address_id, "adversarial_holdout")
+            combined_tags = "|".join(part for part in ["adversarial_base", adversarial_reason, tags] if part)
             queries.append(
                 QueryExample(
                     query_id=f"Q_{q_counter:07d}",
@@ -3294,7 +3496,7 @@ def generate_dataset(
         "adversarial_no_match_share": args.adversarial_no_match_share,
         "seed": seed,
         "address_source": "real",
-        "adversarial_negative_base_strategy": "real_holdout",
+        "adversarial_negative_base_strategy": "near_neighbor_real_holdout",
     }
     if real_address_metadata:
         config["real_address_source"] = real_address_metadata

@@ -11,6 +11,7 @@ from address_resolver import (  # noqa: E402
     QueryAddress,
     ReferenceAddress,
     Resolver,
+    STAGE2_FEATURE_NAMES,
     Stage2Model,
     augment_reference_rows,
     build_city_lookup,
@@ -29,6 +30,7 @@ def reference(
     city: str = "NEWTON",
     state: str = "MS",
     zip_code: str = "39345",
+    source_quality: float = 0.5,
 ) -> ReferenceAddress:
     standardized = standardize_parts(
         house_number,
@@ -57,6 +59,7 @@ def reference(
         zip_code=zip_code,
         standardized_address=standardized,
         street_signature=" ".join(part for part in [street_name, street_type] if part),
+        source_quality=source_quality,
     )
 
 
@@ -107,6 +110,30 @@ class TrainingImprovementTests(unittest.TestCase):
         self.assertGreater(mined.stats["mined_pair_rows"], 0)
         self.assertGreater(mined.stats["mined_positive_hard_negatives"], 0)
         self.assertGreater(len(mined.calibration_rows), 0)
+
+    def test_stage2_features_capture_phonetics_house_mismatch_and_source_quality(self) -> None:
+        rows = [
+            reference("TARGET", "306", "CLARK", "AVE", source_quality=1.0),
+            reference("NEARBY", "301", "CLARK", "AVE", source_quality=0.62),
+        ]
+        resolver = Resolver(rows, build_city_lookup(rows))
+        parsed = resolver.parse("306 clarke ave newton ms")
+
+        features = resolver.candidate_features(parsed, "NEARBY")
+        values = features.values
+        index = {name: offset for offset, name in enumerate(STAGE2_FEATURE_NAMES)}
+
+        self.assertEqual(len(STAGE2_FEATURE_NAMES), len(values))
+        self.assertGreaterEqual(values[index["street_phonetic_similarity"]], 0.9)
+        self.assertEqual(1.0, values[index["zip_city_consistency"]])
+        self.assertEqual(1.0, values[index["house_mismatch_strong_context"]])
+        self.assertAlmostEqual(0.62, values[index["source_quality"]])
+
+        model = Stage2Model(resolver=resolver, weights=[0.0] * len(STAGE2_FEATURE_NAMES))
+        accept_values = model.accept_feature_values(features, best_score=0.7, margin=0.2)
+        self.assertEqual(0.7, accept_values[13])
+        self.assertEqual(0.2, accept_values[14])
+        self.assertGreaterEqual(accept_values[15], 0.9)
 
 
 if __name__ == "__main__":

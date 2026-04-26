@@ -48,6 +48,21 @@ class SourceParsingTests(unittest.TestCase):
         self.assertEqual("", record.city)
         self.assertEqual("39153", record.zip_code)
 
+    def test_state_name_city_placeholder_is_removed(self) -> None:
+        row = {
+            "NUMBER": "610",
+            "STREET": "CR 441",
+            "CITY": "MISSISSIPPI",
+            "REGION": "MS",
+            "POSTCODE": "38930",
+        }
+
+        record = real_row_to_record(row, "openaddresses", "REAL_TEST", "MS")
+
+        self.assertIsNotNone(record)
+        self.assertEqual("", record.city)
+        self.assertEqual("38930", record.zip_code)
+
     def test_maris_uses_later_valid_street_type_field(self) -> None:
         row = {
             "STNUM": "268",

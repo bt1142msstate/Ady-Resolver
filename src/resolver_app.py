@@ -6,6 +6,7 @@ import argparse
 import json
 import sys
 import csv
+from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -49,6 +50,7 @@ DEFAULT_POINT_SOURCE_DIR = PROJECT_ROOT / "datasets" / "source_cache" / "maris_p
 DEFAULT_OPENADDRESSES_SOURCE_DIR = PROJECT_ROOT / "datasets" / "source_cache" / "openaddresses_ms"
 DEFAULT_OPENADDRESSES_DIRECT_SOURCE_DIR = PROJECT_ROOT / "datasets" / "source_cache" / "openaddresses_ms_direct"
 DEFAULT_VERIFIED_SOURCE_DIR = PROJECT_ROOT / "datasets" / "source_cache" / "manual_verified_ms"
+DEFAULT_ACTIVE_LEARNING_DIR = PROJECT_ROOT / "datasets" / "source_cache" / "active_learning"
 DEMO_DATASET_DIR = PROJECT_ROOT / "examples" / "demo_reference"
 DEFAULT_MODEL_PATH = PROJECT_ROOT / "models" / "stage2_model.json"
 ZIP_CITY_ENRICHMENT_MIN_RECORDS = 25
@@ -66,6 +68,7 @@ REFERENCE_FIELDNAMES = [
     "state",
     "zip_code",
     "canonical_address",
+    "source_quality",
 ]
 MANUAL_FIELDNAMES = [
     "address_id",
@@ -80,6 +83,20 @@ MANUAL_FIELDNAMES = [
     "state",
     "zip_code",
     "source_note",
+]
+FEEDBACK_FIELDNAMES = [
+    "created_at",
+    "feedback_type",
+    "input_address",
+    "standardized_address",
+    "predicted_match_id",
+    "predicted_canonical_address",
+    "confidence",
+    "stage",
+    "correct_address",
+    "correct_reference_id",
+    "correct_canonical_address",
+    "top_candidates",
 ]
 
 
@@ -370,6 +387,45 @@ HTML = """<!doctype html>
     .add-status.ok { color: var(--good); font-weight: 700; }
     .add-status.bad { color: var(--bad); font-weight: 700; }
 
+    .feedback {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      background: #fff;
+      margin-top: 14px;
+      display: grid;
+      gap: 10px;
+    }
+
+    .feedback-actions,
+    .feedback-correction {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .feedback-actions button,
+    .feedback-correction button {
+      min-height: 40px;
+      white-space: nowrap;
+    }
+
+    .feedback-correction input {
+      min-height: 40px;
+      font-size: 14px;
+    }
+
+    .feedback-status {
+      min-height: 18px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+    }
+
+    .feedback-status.ok { color: var(--good); font-weight: 700; }
+    .feedback-status.bad { color: var(--bad); font-weight: 700; }
+
     .example {
       text-align: left;
       background: #f8fafc;
@@ -494,6 +550,7 @@ HTML = """<!doctype html>
     const sourceNote = document.getElementById("source-note");
     const addVerifiedButton = document.getElementById("add-verified");
     const addStatus = document.getElementById("add-status");
+    let lastResolution = null;
 
     function escapeHtml(value) {
       return String(value ?? "").replace(/[&<>"']/g, ch => ({
@@ -518,6 +575,7 @@ HTML = """<!doctype html>
     }
 
     function renderResolution(data) {
+      lastResolution = data;
       const hasMatch = Boolean(data.predicted_match_id);
       const needsReview = Boolean(data.needs_review);
       const badgeClass = hasMatch ? (needsReview ? "review" : "match") : "none";
@@ -548,7 +606,75 @@ HTML = """<!doctype html>
           </div>
         </div>
         <div class="candidates">${candidates || '<div class="empty">No candidates returned.</div>'}</div>
+        <div class="feedback">
+          <div class="feedback-actions">
+            <button type="button" data-feedback="correct">Correct</button>
+            <button type="button" data-feedback="wrong">Wrong</button>
+          </div>
+          <div class="feedback-correction">
+            <input id="correct-address" autocomplete="off" placeholder="Should be this address" />
+            <button type="button" data-feedback="correction">Save Correction</button>
+          </div>
+          <div class="feedback-status" id="feedback-status"></div>
+        </div>
       `;
+      attachFeedbackHandlers();
+    }
+
+    function renderFeedbackStatus(text, kind = "") {
+      const feedbackStatus = document.getElementById("feedback-status");
+      if (!feedbackStatus) return;
+      feedbackStatus.className = `feedback-status ${kind}`.trim();
+      feedbackStatus.textContent = text;
+    }
+
+    function attachFeedbackHandlers() {
+      result.querySelectorAll("[data-feedback]").forEach(button => {
+        button.addEventListener("click", () => submitFeedback(button.dataset.feedback));
+      });
+    }
+
+    async function submitFeedback(feedbackType) {
+      if (!lastResolution) {
+        renderFeedbackStatus("Resolve an address first.", "bad");
+        return;
+      }
+      const correctAddress = document.getElementById("correct-address");
+      const correctionValue = correctAddress ? correctAddress.value.trim() : "";
+      if (feedbackType === "correction" && !correctionValue) {
+        renderFeedbackStatus("Correction address is required.", "bad");
+        correctAddress?.focus();
+        return;
+      }
+
+      const buttons = result.querySelectorAll("[data-feedback]");
+      buttons.forEach(button => { button.disabled = true; });
+      renderFeedbackStatus("Saving");
+      try {
+        const response = await fetch("/api/feedback", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            address: lastResolution.input_address,
+            feedback_type: feedbackType,
+            correct_address: correctionValue
+          })
+        });
+        const payload = await response.json();
+        if (!response.ok) {
+          throw new Error(payload.error || "Feedback save failed.");
+        }
+        renderFeedbackStatus(payload.correct_reference_id ? `Saved ${payload.correct_reference_id}` : "Saved", "ok");
+        if (payload.correct_canonical_address) {
+          address.value = payload.correct_canonical_address;
+          await loadHealth();
+          await resolveAddress();
+        }
+      } catch (error) {
+        renderFeedbackStatus(error.message || "Feedback save failed.", "bad");
+      } finally {
+        buttons.forEach(button => { button.disabled = false; });
+      }
     }
 
     async function resolveAddress() {
@@ -640,7 +766,8 @@ HTML = """<!doctype html>
     addVerifiedButton.addEventListener("click", addVerifiedAddress);
     clearButton.addEventListener("click", () => {
       address.value = "";
-        renderEmpty("No address resolved.");
+      lastResolution = null;
+      renderEmpty("No address resolved.");
       address.focus();
     });
     address.addEventListener("keydown", event => {
@@ -661,6 +788,25 @@ HTML = """<!doctype html>
 
 def manual_verified_csv_path() -> Path:
     return DEFAULT_VERIFIED_SOURCE_DIR / "verified_addresses.csv"
+
+
+def active_learning_feedback_csv_path() -> Path:
+    return DEFAULT_ACTIVE_LEARNING_DIR / "resolver_feedback.csv"
+
+
+def append_active_learning_feedback(row: Dict[str, object], path: Optional[Path] = None) -> None:
+    feedback_path = path or active_learning_feedback_csv_path()
+    feedback_path.parent.mkdir(parents=True, exist_ok=True)
+    write_header = not feedback_path.exists() or feedback_path.stat().st_size == 0
+    normalized = {
+        name: json.dumps(value, separators=(",", ":"), sort_keys=True) if isinstance(value, (list, dict)) else value
+        for name, value in row.items()
+    }
+    with feedback_path.open("a", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=FEEDBACK_FIELDNAMES, extrasaction="ignore")
+        if write_header:
+            writer.writeheader()
+        writer.writerow(normalized)
 
 
 def address_record_csv_row(address_id: str, record: AddressRecord, source_note: str = "") -> Dict[str, str]:
@@ -705,12 +851,24 @@ def reference_csv_row(reference: ReferenceAddress) -> Dict[str, str]:
         "state": reference.state,
         "zip_code": reference.zip_code,
         "canonical_address": reference.canonical_address,
+        "source_quality": f"{reference.source_quality:.3f}",
     }
 
 
+def reference_fieldnames_for_path(path: Path) -> List[str]:
+    if path.exists() and path.stat().st_size > 0:
+        with path.open(newline="", encoding="utf-8") as handle:
+            header = next(csv.reader(handle), None)
+        if header:
+            return header
+    return REFERENCE_FIELDNAMES
+
+
 def append_reference_record(dataset_dir: Path, reference: ReferenceAddress) -> None:
-    with reference_csv_path(dataset_dir).open("a", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=REFERENCE_FIELDNAMES)
+    path = reference_csv_path(dataset_dir)
+    fieldnames = reference_fieldnames_for_path(path)
+    with path.open("a", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
         writer.writerow(reference_csv_row(reference))
 
 
@@ -929,6 +1087,7 @@ class ResolverService:
             zip_code=record.zip_code,
             standardized_address=standardized,
             street_signature=street_signature,
+            source_quality=1.0,
         )
 
     def next_manual_id(self) -> str:
@@ -971,6 +1130,45 @@ class ResolverService:
             "already_exists": False,
             "reference_id": reference.address_id,
             "canonical_address": reference.canonical_address,
+            "reference_count": self.reference_count,
+        }
+
+    def record_feedback(self, raw_address: str, feedback_type: str, correct_address: str = "") -> Dict[str, object]:
+        if feedback_type not in {"correct", "wrong", "correction"}:
+            raise ValueError("Feedback type must be correct, wrong, or correction.")
+        if not raw_address:
+            raise ValueError("Address is required.")
+        if feedback_type == "correction" and not correct_address:
+            raise ValueError("Correction address is required.")
+
+        resolution = self.resolve(raw_address)
+        correct_reference_id = ""
+        correct_canonical_address = ""
+        if feedback_type == "correction":
+            correction = self.add_verified_address(correct_address, f"active learning correction for: {raw_address}")
+            correct_reference_id = str(correction["reference_id"])
+            correct_canonical_address = str(correction["canonical_address"])
+
+        row = {
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "feedback_type": feedback_type,
+            "input_address": raw_address,
+            "standardized_address": resolution["standardized_address"],
+            "predicted_match_id": resolution["predicted_match_id"],
+            "predicted_canonical_address": resolution["predicted_canonical_address"],
+            "confidence": resolution["confidence"],
+            "stage": resolution["stage"],
+            "correct_address": correct_address,
+            "correct_reference_id": correct_reference_id,
+            "correct_canonical_address": correct_canonical_address,
+            "top_candidates": resolution["top_candidates"],
+        }
+        append_active_learning_feedback(row)
+        return {
+            "saved": True,
+            "feedback_path": str(active_learning_feedback_csv_path()),
+            "correct_reference_id": correct_reference_id,
+            "correct_canonical_address": correct_canonical_address,
             "reference_count": self.reference_count,
         }
 
@@ -1057,6 +1255,7 @@ def add_zip_city_enrichment(
             city=inferred_city,
             state=record.state,
             zip_code=record.zip_code,
+            source_quality=record.source_quality,
         )
         key = query_text_key(canonical_address(enriched))
         if key in seen_keys:
@@ -1138,6 +1337,7 @@ def build_reference_cache(dataset_dir: Path, source_specs: List[Tuple[Path, str]
                     "state": record.state,
                     "zip_code": record.zip_code,
                     "canonical_address": canonical_address(record),
+                    "source_quality": f"{record.source_quality:.3f}",
                 }
             )
     temporary_reference.replace(reference_csv_path(dataset_dir))
@@ -1199,6 +1399,9 @@ class ResolverRequestHandler(BaseHTTPRequestHandler):
         if route == "/api/add-address":
             self.add_verified_address()
             return
+        if route == "/api/feedback":
+            self.record_feedback()
+            return
         if route != "/api/resolve":
             self.send_json({"error": "Not found"}, status=HTTPStatus.NOT_FOUND)
             return
@@ -1212,6 +1415,20 @@ class ResolverRequestHandler(BaseHTTPRequestHandler):
             self.send_json(self.service.resolve(raw_address))
         except json.JSONDecodeError:
             self.send_json({"error": "Request body must be JSON."}, status=HTTPStatus.BAD_REQUEST)
+        except Exception as exc:  # pragma: no cover - returned to local UI
+            self.send_json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    def record_feedback(self) -> None:
+        try:
+            payload = self.read_json_body()
+            raw_address = str(payload.get("address", "")).strip()
+            feedback_type = str(payload.get("feedback_type", "")).strip()
+            correct_address = str(payload.get("correct_address", "")).strip()
+            self.send_json(self.service.record_feedback(raw_address, feedback_type, correct_address))
+        except json.JSONDecodeError:
+            self.send_json({"error": "Request body must be JSON."}, status=HTTPStatus.BAD_REQUEST)
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
         except Exception as exc:  # pragma: no cover - returned to local UI
             self.send_json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
 

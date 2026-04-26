@@ -15,6 +15,9 @@ an input address is standardized, scored, and matched.
 - Real-address-first dataset generation. The generator samples reference,
   positive, no-match, and adversarial examples from loaded real address source
   records instead of inventing synthetic addresses.
+- Hard adversarial no-matches. The generator deliberately chooses near-neighbor
+  real non-matches such as same house/city with a similar street or same
+  street/city with a nearby house number, then corrupts those examples.
 - Bring-your-own address CSV training. Generic CSVs can use either structured
   columns or a single `full_address`/`address` column with optional
   `city`/`state`/`zip` columns.
@@ -22,14 +25,17 @@ an input address is standardized, scored, and matched.
   addressing ZIPs, OpenAddresses processed extracts, OpenAddresses source
   services, NAD text exports, and manual verified supplements.
 - Locality-aware resolver pipeline with deterministic Stage 1 rules and a
-  lightweight Stage 2 model trained with mined hard negatives.
+  lightweight Stage 2 model trained with mined hard negatives, phonetic
+  street/city features, rank/margin features, ZIP/city consistency,
+  source-quality weighting, and stronger house-number mismatch penalties.
 - Typo handling for street names, street suffixes, city names, directionals,
   and compounded input errors such as `101 candoowse sr newtooon MS`.
 - Data-quality guards for obvious parcel/location artifacts such as zero house
   numbers, non-numeric house numbers, side-of-road markers, `N OF ...`
   descriptors, `DOD` note rows, and duplicated terminal street types.
 - Browser app for typing an address and seeing the standardized query,
-  selected match, confidence, stage, and top candidates.
+  selected match, confidence, stage, and top candidates. The app can collect
+  correct/wrong/correction feedback for active-learning retraining.
 
 ## Quick Start
 
@@ -116,6 +122,10 @@ Practical source strategy:
   `datasets/source_cache/manual_verified_ms/verified_addresses.csv`. The local
   app has an Add Verified Address form that writes this supplement, updates the
   live resolver index, and persists the address into the current reference CSV.
+  The resolver result panel also has Correct, Wrong, and Save Correction
+  feedback controls. Feedback is written to
+  `datasets/source_cache/active_learning/resolver_feedback.csv`; corrections
+  also add the verified address to the manual supplement.
 
 Generate from locally supplied MS811/MARIS county shapefile ZIPs with all-82
 county enforcement:
@@ -286,13 +296,30 @@ and no-match false-positive candidates, then retrains with those hard examples.
 The saved model metadata records the base/mined row counts so each run can be
 audited.
 
+To include app feedback in the next training run, pass the feedback CSV:
+
+```bash
+python3 src/address_resolver.py \
+  --mode fit-predict \
+  --train-dataset-dir datasets/ms811_real/train_dataset \
+  --eval-dataset-dir datasets/ms811_real/eval_dataset \
+  --active-learning-feedback-csv datasets/source_cache/active_learning/resolver_feedback.csv \
+  --model-path models/stage2_model.json \
+  --output-dir runs/ms811_real_active \
+  --jobs 4
+```
+
+Correction rows become positive training examples when the corrected canonical
+address exists in the training reference set. Wrong rows become hard no-match
+training examples.
+
 To explicitly check whether Stage 2 is helping, run prediction with variant
 comparison enabled:
 
 ```bash
 python3 src/address_resolver.py \
   --mode predict \
-  --eval-dataset-dir datasets/fresh_60k_compound/eval_dataset \
+  --eval-dataset-dir datasets/fresh_60k_active_v2/eval_dataset \
   --model-path models/stage2_model.json \
   --output-dir runs/stage_comparison_current \
   --compare-variants \
@@ -309,7 +336,7 @@ replacing the labeled eval reference IDs:
 ```bash
 python3 src/address_resolver.py \
   --mode predict \
-  --eval-dataset-dir datasets/fresh_60k_compound/eval_dataset \
+  --eval-dataset-dir datasets/fresh_60k_active_v2/eval_dataset \
   --model-path models/stage2_model.json \
   --output-dir runs/live_reference_smoke \
   --augment-eval-reference-csv datasets/ms_full_reference/reference_addresses.csv \
@@ -320,13 +347,17 @@ python3 src/address_resolver.py \
 
 Current checked-in model smoke results on April 25, 2026:
 
-- 60k compound eval, 5k-reference candidate universe: combined accuracy
-  `0.9505`, recall `0.9492`, precision `0.9752`.
-- 1k live-reference smoke, 1.75M-reference candidate universe: combined
-  accuracy `0.810`, recall `0.810`, precision `0.9747`.
-- The live-reference smoke improved over the previous default model, which
-  scored combined accuracy `0.776`, recall `0.776`, precision `0.9676` on the
-  same 1k query slice.
+- 60k active-v2 eval, 5k-reference candidate universe: combined accuracy
+  `0.8796`, recall `0.8900`, precision `0.9221`. On the same harder eval set,
+  the previous default model scored combined accuracy `0.8088`, recall
+  `0.8347`, precision `0.8694`.
+- Stage 2 is materially better than Stage 1 on that active-v2 eval: Stage 1
+  accuracy `0.5762`, Stage 2 accuracy `0.8859`, combined accuracy `0.8796`.
+- 1k active-v2 live-reference smoke, 1.75M-reference candidate universe:
+  combined accuracy `0.610`, recall `0.610`, precision `0.8828`, accepted
+  accuracy `0.9057`. On the same live-reference slice, the previous default
+  model scored combined accuracy `0.604`, recall `0.604`, precision `0.9042`,
+  accepted accuracy `0.7474`.
 
 Run the local resolver app:
 
@@ -341,7 +372,9 @@ It also merges `datasets/source_cache/manual_verified_ms` when present. Later
 runs reuse that full reference cache. Then open `http://127.0.0.1:8765` and
 type an address to see the standardized query, accepted match, confidence,
 stage, and top candidates. Use the Add Verified Address form for confirmed
-missing addresses; duplicates are detected and will not be added twice.
+missing addresses; duplicates are detected and will not be added twice. Use the
+feedback controls under each resolver result to capture real user misses for the
+next active-learning training run.
 
 ## Tests
 
