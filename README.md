@@ -10,6 +10,8 @@ public or private address sources, generates typo-heavy training/evaluation
 data from real source records, and serves a local browser app for inspecting how
 an input address is standardized, scored, and matched.
 
+![Ady Resolver local browser app resolving a messy Mississippi address](docs/ady-resolver-app.png)
+
 ## Features
 
 - Real-address-first dataset generation. The generator samples reference,
@@ -39,6 +41,10 @@ an input address is standardized, scored, and matched.
   selected match, confidence, stage, and top candidates. The app can collect
   correct/wrong/correction feedback, apply exact-input feedback overrides, and
   queue active-learning retraining in the background.
+- CSV/XLSX workflows in the browser app. Batch Resolve inspects the selected
+  file, lets you choose the address and optional ID columns from dropdowns, and
+  returns an Excel report. Add Verified Address can import verified rows from
+  CSV/XLSX into the manual supplement without retyping each address.
 
 ## Quick Start
 
@@ -280,11 +286,10 @@ Source comparison from the April 25, 2026 smoke tests:
   manual verified supplement. It now filters obvious parcel/location artifacts
   such as zero house numbers, non-numeric house numbers, `S/S` side-of-road
   markers, `N OF ...` descriptors, `DOD` note rows, and duplicated terminal
-  street types. After filtering, it de-duplicates to 1,542,377 source reference
-  addresses. It then adds 209,801 conservative ZIP-to-city consensus variants
-  for source records whose city was blank, for a live resolver cache of
-  1,752,178 reference addresses. These variants require at least 25 real records
-  in a ZIP and a 98% dominant postal-community share.
+  street types. In the current development cache, filtering, de-duplication,
+  conservative ZIP-to-city consensus variants, and manual verified additions
+  produce 1,752,180 live resolver reference rows. ZIP-to-city variants require
+  at least 25 real records in a ZIP and a 98% dominant postal-community share.
 - Full MS811/MARIS county ZIP input is the only configured path that is allowed
   to pass the all-82-county guard as true point-address input.
 
