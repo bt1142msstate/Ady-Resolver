@@ -204,6 +204,125 @@ class ResolverRegressionTests(unittest.TestCase):
                 self.assertEqual("STARKVILLE", parsed.city)
                 self.assertEqual("TARGET", resolution.predicted_match_id)
 
+    def test_city_context_keeps_street_token_from_becoming_prefix_city(self) -> None:
+        rows = [
+            reference("TARGET", "306", "CLARK", "AVE", "NEWTON"),
+            *[
+                reference(f"CLARKSDALE_{index}", str(100 + index), "DELTA", "ST", "CLARKSDALE", zip_code="38614")
+                for index in range(25)
+            ],
+        ]
+        resolver = Resolver(rows, build_city_lookup(rows))
+
+        examples = [
+            "306 clark avenue netwon missppi",
+            "clark av 306 newto ms",
+        ]
+
+        for raw in examples:
+            with self.subTest(raw=raw):
+                parsed = resolver.parse(raw)
+                resolution = resolver.resolve_stage1(parsed, review_threshold=0.8)
+
+                self.assertEqual("NEWTON", parsed.city)
+                self.assertEqual("CLARK", parsed.street_name)
+                self.assertEqual("TARGET", resolution.predicted_match_id)
+
+    def test_fuzzy_city_variants_chain_after_inferring_state(self) -> None:
+        rows = [
+            reference("TARGET", "385", "COLLEGE VIEW", "ST", "STARKVILLE", zip_code="39759"),
+            reference("TYPO_CITY", "99", "OTHER", "RD", "STARKVILEE", zip_code="39759"),
+            *[
+                reference(f"STARKVILLE_{index}", str(100 + index), "MAIN", "ST", "STARKVILLE", zip_code="39759")
+                for index in range(25)
+            ],
+        ]
+        resolver = Resolver(rows, build_city_lookup(rows))
+
+        parsed = resolver.parse("starkvilee 385 collagr vieww street")
+        resolution = resolver.resolve_stage1(parsed, review_threshold=0.8)
+
+        self.assertEqual("STARKVILEE", parsed.city)
+        self.assertIn(
+            "385 COLLAGR VIEWW ST, STARKVILLE MS",
+            [variant.standardized_address for _, variant in resolver.locality_variants(parsed)],
+        )
+        self.assertEqual("TARGET", resolution.predicted_match_id)
+
+    def test_five_digit_house_number_is_not_stolen_as_zip(self) -> None:
+        rows = [
+            reference("TARGET", "14400", "WILLIAMSBURG", "DR", "GULFPORT", zip_code="39503"),
+            reference("CITY_COUNT", "100", "MAIN", "ST", "GULFPORT", zip_code="39503"),
+        ]
+        resolver = Resolver(rows, build_city_lookup(rows))
+
+        parsed = resolver.parse("14400 willibsburg dr gulfpott mississipi")
+        resolution = resolver.resolve_stage1(parsed, review_threshold=0.8)
+
+        self.assertEqual("14400", parsed.house_number)
+        self.assertEqual("", parsed.zip_code)
+        self.assertEqual("GULFPORT", parsed.city)
+        self.assertEqual("TARGET", resolution.predicted_match_id)
+
+    def test_trailing_house_number_with_type_typo_and_city_typo_resolves(self) -> None:
+        rows = [
+            reference("TARGET", "1553", "TORRENCE", "DR", "BYRAM", zip_code="39272"),
+            reference("CITY_COUNT", "100", "MAIN", "ST", "BYRAM", zip_code="39272"),
+        ]
+        resolver = Resolver(rows, build_city_lookup(rows))
+
+        parsed = resolver.parse("missppi byrmm driev tojrenec 1553")
+        resolution = resolver.resolve_stage1(parsed, review_threshold=0.8)
+
+        self.assertEqual("1553", parsed.house_number)
+        self.assertEqual("DR", parsed.street_type)
+        self.assertEqual("BYRAM", parsed.city)
+        self.assertEqual("TARGET", resolution.predicted_match_id)
+
+    def test_global_city_typo_uses_house_street_context_without_state(self) -> None:
+        rows = [
+            reference("TARGET", "212", "PORTER", "ST", "SENATOBIA", zip_code="38668"),
+            reference("CITY_COUNT", "100", "MAIN", "ST", "SENATOBIA", zip_code="38668"),
+        ]
+        resolver = Resolver(rows, build_city_lookup(rows))
+
+        parsed = resolver.parse("portree 212 street sneattobia")
+        resolution = resolver.resolve_stage1(parsed, review_threshold=0.8)
+
+        self.assertEqual("SENATOBIA", parsed.city)
+        self.assertEqual("PORTREE", parsed.street_name)
+        self.assertEqual("TARGET", resolution.predicted_match_id)
+
+    def test_contextual_city_reassignment_recovers_street_token_city_confusion(self) -> None:
+        rows = [
+            reference("TARGET", "2685", "PRAIRIE VIEW", "CIR", "TUPELO", zip_code="38826"),
+            reference("CITY_COUNT", "100", "MAIN", "ST", "TUPELO", zip_code="38826"),
+            reference("PRAIRIE_CITY", "2685", "OTHER", "RD", "PRAIRIE", zip_code="39756"),
+        ]
+        resolver = Resolver(rows, build_city_lookup(rows))
+
+        parsed = resolver.parse("prairie vimw 2685 circde tupeplo")
+        resolution = resolver.resolve_stage1(parsed, review_threshold=0.8)
+
+        self.assertEqual("TUPELO", parsed.city)
+        self.assertEqual("PRAIRIE VIMW", parsed.street_name)
+        self.assertEqual("CIR", parsed.street_type)
+        self.assertEqual("TARGET", resolution.predicted_match_id)
+
+    def test_contextual_state_city_fuzzy_handles_heavy_city_typo(self) -> None:
+        rows = [
+            reference("TARGET", "160", "JOHNSTONE", "DR", "MADISON", zip_code="39110"),
+            reference("CITY_COUNT", "100", "MAIN", "ST", "MADISON", zip_code="39110"),
+        ]
+        resolver = Resolver(rows, build_city_lookup(rows))
+
+        parsed = resolver.parse("maiosn 160 johnstoone st missppi")
+        resolution = resolver.resolve_stage1(parsed, review_threshold=0.8)
+
+        self.assertEqual("MADISON", parsed.city)
+        self.assertEqual("JOHNSTOONE", parsed.street_name)
+        self.assertEqual("TARGET", resolution.predicted_match_id)
+
     def test_west_place_is_parsed_as_street_name_not_empty_directional(self) -> None:
         rows = [
             reference("TARGET", "419", "WEST", "PL", "MADISON", zip_code="39110"),

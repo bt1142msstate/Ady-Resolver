@@ -47,6 +47,8 @@ STATE_TYPO_ALIASES = {
     "MISSPI": "MS",
     "MISSISSPI": "MS",
     "MISSISSIPI": "MS",
+    "MISISSIPI": "MS",
+    "MISISIPI": "MS",
     "MISSISIPPI": "MS",
     "MISISIPPI": "MS",
     "MISISSIPPI": "MS",
@@ -56,16 +58,27 @@ STREET_TYPE_TYPO_ALIASES = {
     "SR": "ST",
     "SY": "ST",
     "DT": "ST",
+    "STRET": "ST",
+    "STREE": "ST",
+    "STRETT": "ST",
     "XR": "DR",
     "FR": "DR",
     "DN": "DR",
+    "DRIE": "DR",
+    "DRIEV": "DR",
+    "DRIVEE": "DR",
     "RN": "RD",
     "RF": "RD",
+    "RAOD": "RD",
+    "RODA": "RD",
     "LF": "LN",
     "KN": "LN",
     "AB": "AVE",
     "AC": "AVE",
     "SV": "AVE",
+    "AVNE": "AVE",
+    "AVNEU": "AVE",
+    "CIRCDE": "CIR",
 }
 CONTEXTUAL_STREET_TYPE_TYPO_ALIASES = {
     "SE": "ST",
@@ -680,7 +693,17 @@ def canonical_street_type_token(token: str, allow_typos: bool = True) -> str:
     if canonical:
         return canonical
     if allow_typos:
-        return STREET_TYPE_TYPO_ALIASES.get(normalized, "")
+        typo_match = STREET_TYPE_TYPO_ALIASES.get(normalized, "")
+        if typo_match:
+            return typo_match
+        if len(normalized) >= 5:
+            full_match, best_score, second_score = closest_choice(
+                normalized,
+                tuple(FULL_TO_STREET_TYPE),
+                minimum_score=0.80,
+            )
+            if full_match and best_score - second_score >= 0.04:
+                return FULL_TO_STREET_TYPE[full_match]
     return ""
 
 
@@ -696,9 +719,18 @@ def extract_zip_code(tokens: List[str]) -> str:
     for idx in range(len(tokens) - 1, -1, -1):
         token = tokens[idx]
         if re.fullmatch(r"\d{5}", token):
+            other_house_number = any(
+                other_idx != idx and looks_like_house_number_token(other_token)
+                for other_idx, other_token in enumerate(tokens)
+            )
+            if not other_house_number:
+                continue
             del tokens[idx]
             return token
     if tokens and re.fullmatch(r"\d{4}", tokens[-1]):
+        other_house_number = any(looks_like_house_number_token(token) for token in tokens[:-1])
+        if not other_house_number:
+            return ""
         return tokens.pop()
     return ""
 
@@ -798,11 +830,17 @@ def city_candidate_looks_like_street(tokens: Sequence[str], start: int, width: i
     return False
 
 
+def city_candidate_too_short(candidate: Sequence[str]) -> bool:
+    return sum(len(token) for token in candidate) < 3
+
+
 def extract_city(tokens: List[str], city_lookup: Dict[Tuple[str, ...], str], state: str, zip_code: str) -> str:
     if not tokens:
         return ""
     for width in range(min(3, len(tokens)), 0, -1):
         candidate = tuple(tokens[-width:])
+        if city_candidate_too_short(candidate):
+            continue
         remaining_required = 1 if state or zip_code else 2
         if candidate in city_lookup and len(tokens) - width >= remaining_required:
             city = city_lookup[candidate]
@@ -813,6 +851,8 @@ def extract_city(tokens: List[str], city_lookup: Dict[Tuple[str, ...], str], sta
         for start in range(len(tokens) - width, -1, -1):
             candidate = tuple(tokens[start:start + width])
             if candidate not in city_lookup:
+                continue
+            if city_candidate_too_short(candidate):
                 continue
             if any(any(ch.isdigit() for ch in token) for token in candidate):
                 continue
@@ -1019,6 +1059,7 @@ class Resolver:
             cached = parse_query_address(raw, self.city_lookup)
             cached = self.apply_fuzzy_city_anywhere(cached)
             cached = self.apply_fuzzy_city_suffix(cached)
+            cached = self.apply_contextual_city_reassignment(cached)
             self._parse_cache[raw] = cached
         return cached
 
@@ -1085,6 +1126,64 @@ class Resolver:
             tokens.append(parsed.suffixdir)
         return tokens
 
+    def city_street_context_score(
+        self,
+        parsed: ParsedAddress,
+        city: str,
+        state: str,
+        predir: str,
+        street_name: str,
+        street_type: str,
+        suffixdir: str,
+    ) -> float:
+        if not parsed.house_number or not city or not street_name:
+            return 0.0
+
+        candidate_ids: List[str] = []
+        if state:
+            candidate_ids.extend(self.by_house_city_state.get((parsed.house_number, city, state), ()))
+        if parsed.zip_code:
+            candidate_ids.extend(self.by_house_zip.get((parsed.house_number, parsed.zip_code), ()))
+        if not candidate_ids:
+            candidate_ids.extend(self.by_house.get(parsed.house_number, ()))
+
+        seen = set()
+        best_score = 0.0
+        query_core = " ".join(bit for bit in [predir, street_name, suffixdir] if bit)
+        checked = 0
+        scanned = 0
+        for candidate_id in candidate_ids:
+            if candidate_id in seen:
+                continue
+            seen.add(candidate_id)
+            scanned += 1
+            candidate = self.reference_by_id[candidate_id]
+            if candidate.city != city:
+                if scanned >= 5000:
+                    break
+                continue
+            if state and candidate.state != state:
+                if scanned >= 5000:
+                    break
+                continue
+            if parsed.zip_code and candidate.zip_code and candidate.zip_code[:3] != parsed.zip_code[:3]:
+                if scanned >= 5000:
+                    break
+                continue
+
+            candidate_core = " ".join(bit for bit in [candidate.predir, candidate.street_name, candidate.suffixdir] if bit)
+            street_similarity = max(
+                cheap_similarity(street_name, candidate.street_name),
+                sequence_similarity(street_name, candidate.street_name),
+                token_overlap(query_core, candidate_core),
+            )
+            type_score = 1.0 if not street_type or street_type == candidate.street_type else 0.0
+            best_score = max(best_score, 0.88 * street_similarity + 0.12 * type_score)
+            checked += 1
+            if checked >= 1500 or scanned >= 5000 or (checked >= 250 and best_score >= 0.90):
+                break
+        return best_score
+
     def apply_fuzzy_city_anywhere(self, parsed: ParsedAddress) -> ParsedAddress:
         if parsed.city or not parsed.street_name:
             return parsed
@@ -1097,7 +1196,7 @@ class Resolver:
         if not city_choices:
             return parsed
 
-        best: Tuple[float, int, int, str] = (0.0, 0, 0, "")
+        best: Tuple[int, float, float, int, int, str] = (0, 0.0, 0.0, 0, 0, "")
         best_start = -1
         best_width = 0
         max_width = min(3, len(street_tokens) - 1)
@@ -1108,7 +1207,7 @@ class Resolver:
                     continue
                 candidate = " ".join(candidate_tokens)
                 if allow_global_city_match:
-                    minimum_score = 0.86 if width == 1 else 0.82
+                    minimum_score = 0.78 if width == 1 else 0.76
                 elif parsed.house_number and parsed.state:
                     minimum_score = 0.62 if width == 1 else 0.60
                 else:
@@ -1119,14 +1218,45 @@ class Resolver:
                 required_margin = 0.08 if allow_global_city_match else 0.05
                 if not city_match or (best_score - second_score < required_margin and best_score < 0.90):
                     continue
+
+                remaining_tokens = street_tokens[:start] + street_tokens[start + width:]
+                predir, street_name, street_type, suffixdir = parse_street_tokens(remaining_tokens, allow_contextual_type=True)
+                if not street_name:
+                    continue
+
+                state = parsed.state
+                if allow_global_city_match and not state:
+                    states = {candidate_state for candidate_state in self.states_by_city.get(city_match, ()) if candidate_state}
+                    if len(states) == 1:
+                        state = next(iter(states))
+
+                context_score = self.city_street_context_score(
+                    parsed,
+                    city_match,
+                    state,
+                    predir,
+                    street_name,
+                    street_type,
+                    suffixdir,
+                )
+                context_bucket = 1 if context_score >= 0.72 else 0
                 position_score = 1 if start in {0, len(street_tokens) - width} else 0
-                candidate_score = (best_score, position_score, width, city_match)
+                candidate_score = (
+                    context_bucket,
+                    best_score + 0.35 * context_score,
+                    best_score,
+                    position_score,
+                    width,
+                    city_match,
+                )
                 if candidate_score > best:
                     best = candidate_score
                     best_start = start
                     best_width = width
 
-        if not best[3]:
+        if not best[5]:
+            return parsed
+        if allow_global_city_match and best[0] == 0 and best[2] < 0.86:
             return parsed
 
         remaining_tokens = street_tokens[:best_start] + street_tokens[best_start + best_width:]
@@ -1136,7 +1266,7 @@ class Resolver:
 
         state = parsed.state
         if allow_global_city_match and not state:
-            states = {candidate_state for candidate_state in self.states_by_city.get(best[3], ()) if candidate_state}
+            states = {candidate_state for candidate_state in self.states_by_city.get(best[5], ()) if candidate_state}
             if len(states) == 1:
                 state = next(iter(states))
 
@@ -1146,7 +1276,7 @@ class Resolver:
             street_name=street_name,
             street_type=street_type,
             suffixdir=suffixdir,
-            city=best[3],
+            city=best[5],
             state=state,
         )
 
@@ -1243,6 +1373,91 @@ class Resolver:
 
         return parsed
 
+    def apply_contextual_city_reassignment(self, parsed: ParsedAddress) -> ParsedAddress:
+        if not parsed.city or not parsed.house_number or not parsed.street_name:
+            return parsed
+
+        street_tokens = self.street_tokens_for_reparse(parsed)
+        if len(street_tokens) < 2:
+            return parsed
+
+        city_choices, allow_global_city_match = self.fuzzy_city_choices(parsed)
+        if not city_choices:
+            return parsed
+
+        current_state = parsed.state
+        if not current_state:
+            states = {state for state in self.states_by_city.get(parsed.city, ()) if state}
+            if len(states) == 1:
+                current_state = next(iter(states))
+        current_context = self.city_street_context_score(
+            parsed,
+            parsed.city,
+            current_state,
+            parsed.predir,
+            parsed.street_name,
+            parsed.street_type,
+            parsed.suffixdir,
+        )
+
+        best: Tuple[float, float, str, str, str, str, str, str] = (0.0, 0.0, "", "", "", "", "", "")
+        max_width = min(3, len(street_tokens) - 1)
+        for width in range(max_width, 0, -1):
+            for start in range(0, len(street_tokens) - width + 1):
+                candidate_tokens = street_tokens[start:start + width]
+                if all(looks_like_street_descriptor(token) for token in candidate_tokens):
+                    continue
+                candidate = " ".join(candidate_tokens)
+                minimum_score = 0.78 if allow_global_city_match else 0.62
+                city_match, best_score, second_score = self.prefix_city_choice(candidate, city_choices, parsed.state)
+                if not city_match:
+                    city_match, best_score, second_score = closest_choice(candidate, city_choices, minimum_score=minimum_score)
+                if not city_match or city_match == parsed.city:
+                    continue
+                if best_score - second_score < 0.04 and best_score < 0.90:
+                    continue
+
+                state = parsed.state
+                if not state:
+                    states = {candidate_state for candidate_state in self.states_by_city.get(city_match, ()) if candidate_state}
+                    if len(states) == 1:
+                        state = next(iter(states))
+                if not state and not parsed.zip_code:
+                    continue
+
+                remaining_tokens = parsed.city.split() + street_tokens[:start] + street_tokens[start + width:]
+                predir, street_name, street_type, suffixdir = parse_street_tokens(remaining_tokens, allow_contextual_type=True)
+                if not street_name:
+                    continue
+
+                context_score = self.city_street_context_score(
+                    parsed,
+                    city_match,
+                    state,
+                    predir,
+                    street_name,
+                    street_type,
+                    suffixdir,
+                )
+                if context_score < max(0.66, current_context + 0.18):
+                    continue
+                candidate_score = (context_score, best_score, city_match, state, predir, street_name, street_type, suffixdir)
+                if candidate_score > best:
+                    best = candidate_score
+
+        if not best[2]:
+            return parsed
+
+        return rebuild_parsed(
+            parsed,
+            predir=best[4],
+            street_name=best[5],
+            street_type=best[6],
+            suffixdir=best[7],
+            city=best[2],
+            state=best[3],
+        )
+
     def locality_variants(self, parsed: ParsedAddress) -> List[Tuple[str, ParsedAddress]]:
         variants: List[Tuple[str, ParsedAddress]] = []
 
@@ -1265,25 +1480,40 @@ class Resolver:
                 if corrected != parsed:
                     variants.append(("city_state", corrected))
 
-        if parsed.city and parsed.state in self.cities_by_state:
-            city_choices = tuple(self.cities_by_state[parsed.state])
+        city_fuzzy_bases = [parsed, *(variant for reason, variant in variants if reason == "city_state")]
+        for base in city_fuzzy_bases:
+            if not base.city or base.state not in self.cities_by_state:
+                continue
+            city_choices = tuple(self.cities_by_state[base.state])
             city_match, best_score, second_score = closest_choice(
-                parsed.city,
+                base.city,
                 city_choices,
-                minimum_score=0.82,
+                minimum_score=0.62,
             )
-            if city_match and city_match != parsed.city and best_score - second_score >= 0.05:
-                corrected = rebuild_parsed(parsed, city=city_match)
-                variants.append(("state_city_fuzzy", corrected))
-            alternate_choices = tuple(city for city in city_choices if city != parsed.city)
+            if city_match and city_match != base.city:
+                corrected = rebuild_parsed(base, city=city_match)
+                context_score = self.city_street_context_score(
+                    corrected,
+                    city_match,
+                    corrected.state,
+                    corrected.predir,
+                    corrected.street_name,
+                    corrected.street_type,
+                    corrected.suffixdir,
+                )
+                city_similarity_ok = best_score >= 0.82 and best_score - second_score >= 0.05
+                context_ok = best_score >= 0.62 and context_score >= 0.72
+                if city_similarity_ok or context_ok:
+                    variants.append(("state_city_fuzzy", corrected))
+            alternate_choices = tuple(city for city in city_choices if city != base.city)
             if alternate_choices:
-                alt_match, alt_score, alt_second_score = closest_choice(parsed.city, alternate_choices, minimum_score=0.86)
-                source_count = self.city_counts_by_state[parsed.state][parsed.city]
-                alt_count = self.city_counts_by_state[parsed.state][alt_match] if alt_match else 0
+                alt_match, alt_score, alt_second_score = closest_choice(base.city, alternate_choices, minimum_score=0.86)
+                source_count = self.city_counts_by_state[base.state][base.city]
+                alt_count = self.city_counts_by_state[base.state][alt_match] if alt_match else 0
                 count_ratio_ok = source_count <= 3 and alt_count >= max(20, source_count * 10)
                 margin_ok = alt_score - alt_second_score >= 0.03
                 if alt_match and alt_count > source_count and (margin_ok or count_ratio_ok):
-                    corrected = rebuild_parsed(parsed, city=alt_match)
+                    corrected = rebuild_parsed(base, city=alt_match)
                     if corrected != parsed:
                         variants.append(("state_city_fuzzy_alt", corrected))
 
