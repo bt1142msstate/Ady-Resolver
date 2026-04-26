@@ -33,7 +33,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model-path", type=Path, default=PROJECT_ROOT / "models" / "stage2_model.json", help="Output model JSON path.")
     parser.add_argument("--run-dir", type=Path, default=PROJECT_ROOT / "runs" / "custom_training", help="Training evaluation output directory.")
     parser.add_argument("--reference-size", type=int, default=5000, help="Reference records sampled from the supplied address pool.")
-    parser.add_argument("--noisy-per-reference", type=int, default=8, help="Positive noisy examples generated per reference address.")
+    parser.add_argument("--noisy-per-reference", type=int, default=12, help="Positive noisy examples generated per reference address.")
     parser.add_argument("--no-match-ratio", type=float, default=0.25, help="Negative no-match query ratio relative to positive query count.")
     parser.add_argument("--adversarial-no-match-share", type=float, default=0.5, help="Share of no-match queries generated as near-match adversarial examples.")
     parser.add_argument("--seed", type=int, default=4633, help="Dataset generation seed.")

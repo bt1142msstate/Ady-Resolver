@@ -9,8 +9,19 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = PROJECT_ROOT / "src"
 sys.path.insert(0, str(SRC_DIR))
 
-from address_resolver import ReferenceAddress, load_active_learning_feedback_queries, standardize_parts  # noqa: E402
-from resolver_app import FEEDBACK_FIELDNAMES, append_active_learning_feedback  # noqa: E402
+from address_resolver import (  # noqa: E402
+    ReferenceAddress,
+    Resolver,
+    build_city_lookup,
+    load_active_learning_feedback_queries,
+    standardize_parts,
+)
+from resolver_app import (  # noqa: E402
+    FEEDBACK_FIELDNAMES,
+    append_active_learning_feedback,
+    feedback_override_keys,
+    load_feedback_overrides,
+)
 
 
 def reference(address_id: str, house_number: str, street_name: str, street_type: str) -> ReferenceAddress:
@@ -98,6 +109,28 @@ class ActiveLearningTests(unittest.TestCase):
         self.assertEqual(1, queries[0].label)
         self.assertEqual(0, queries[1].label)
         self.assertEqual("", queries[1].true_match_id)
+
+    def test_feedback_overrides_trust_repeated_correct_inputs(self) -> None:
+        target = reference("REF_TARGET", "101", "CANDACE", "ST")
+        resolver = Resolver([target], build_city_lookup([target]))
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "feedback.csv"
+            append_active_learning_feedback(
+                {
+                    "created_at": "2026-04-25T00:00:00+00:00",
+                    "feedback_type": "correct",
+                    "input_address": "101 candoowse sr newtooon MS",
+                    "standardized_address": "101 CANDOOWSE ST, NEWTON MS",
+                    "predicted_match_id": "REF_TARGET",
+                    "predicted_canonical_address": target.canonical_address,
+                },
+                path,
+            )
+
+            overrides = load_feedback_overrides(resolver, path)
+
+        for key in feedback_override_keys("101 candoowse sr newtooon MS", "101 CANDOOWSE ST, NEWTON MS"):
+            self.assertEqual("REF_TARGET", overrides[key])
 
 
 if __name__ == "__main__":

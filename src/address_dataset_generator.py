@@ -3527,7 +3527,7 @@ def parse_args() -> argparse.Namespace:
         help="In paired mode, reuse the same reference database for train/eval and generate only separate query/negative sets.",
     )
     parser.add_argument("--reference-size", type=int, default=5000, help="Number of reference addresses.")
-    parser.add_argument("--noisy-per-reference", type=int, default=8, help="Positive noisy variants per reference address.")
+    parser.add_argument("--noisy-per-reference", type=int, default=12, help="Positive noisy variants per reference address.")
     parser.add_argument("--no-match-ratio", type=float, default=0.5, help="Negative query count as a fraction of positive query count.")
     parser.add_argument(
         "--adversarial-no-match-share",

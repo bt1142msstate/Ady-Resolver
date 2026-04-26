@@ -6,6 +6,8 @@ import argparse
 import json
 import sys
 import csv
+import subprocess
+import threading
 from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -53,6 +55,9 @@ DEFAULT_VERIFIED_SOURCE_DIR = PROJECT_ROOT / "datasets" / "source_cache" / "manu
 DEFAULT_ACTIVE_LEARNING_DIR = PROJECT_ROOT / "datasets" / "source_cache" / "active_learning"
 DEMO_DATASET_DIR = PROJECT_ROOT / "examples" / "demo_reference"
 DEFAULT_MODEL_PATH = PROJECT_ROOT / "models" / "stage2_model.json"
+DEFAULT_TRAIN_DATASET_DIR = PROJECT_ROOT / "datasets" / "fresh_60k_active_v2" / "train_dataset"
+DEFAULT_EVAL_DATASET_DIR = PROJECT_ROOT / "datasets" / "fresh_60k_active_v2" / "eval_dataset"
+DEFAULT_TRAINING_OUTPUT_DIR = PROJECT_ROOT / "runs" / "app_training"
 ZIP_CITY_ENRICHMENT_MIN_RECORDS = 25
 ZIP_CITY_ENRICHMENT_MIN_SHARE = 0.98
 REFERENCE_FIELDNAMES = [
@@ -387,6 +392,24 @@ HTML = """<!doctype html>
     .add-status.ok { color: var(--good); font-weight: 700; }
     .add-status.bad { color: var(--bad); font-weight: 700; }
 
+    .train-form {
+      border-top: 1px solid var(--line);
+      padding: 12px;
+      display: grid;
+      gap: 10px;
+    }
+
+    .train-status {
+      min-height: 18px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+    }
+
+    .train-status.ok { color: var(--good); font-weight: 700; }
+    .train-status.bad { color: var(--bad); font-weight: 700; }
+
     .feedback {
       border: 1px solid var(--line);
       border-radius: 8px;
@@ -535,6 +558,11 @@ HTML = """<!doctype html>
           <button class="primary" id="add-verified">Add</button>
           <div class="add-status" id="add-status"></div>
         </div>
+        <h2>Training</h2>
+        <div class="train-form">
+          <button class="primary" id="update-training">Update Training</button>
+          <div class="train-status" id="train-status"></div>
+        </div>
       </aside>
     </main>
   </div>
@@ -550,7 +578,10 @@ HTML = """<!doctype html>
     const sourceNote = document.getElementById("source-note");
     const addVerifiedButton = document.getElementById("add-verified");
     const addStatus = document.getElementById("add-status");
+    const updateTrainingButton = document.getElementById("update-training");
+    const trainStatus = document.getElementById("train-status");
     let lastResolution = null;
+    let trainingPoll = null;
 
     function escapeHtml(value) {
       return String(value ?? "").replace(/[&<>"']/g, ch => ({
@@ -729,6 +760,67 @@ HTML = """<!doctype html>
       addStatus.textContent = text;
     }
 
+    function renderTrainStatus(text, kind = "") {
+      trainStatus.className = `train-status ${kind}`.trim();
+      trainStatus.textContent = text;
+    }
+
+    function trainingStatusText(data) {
+      if (!data || data.state === "idle") {
+        return "Idle";
+      }
+      if (data.state === "running") {
+        return `Training${data.started_at ? ` since ${data.started_at}` : ""}`;
+      }
+      if (data.state === "succeeded") {
+        const accuracy = data.evaluation?.variants?.combined?.accuracy;
+        return accuracy === undefined ? "Training complete" : `Training complete, combined accuracy ${percent(accuracy)}`;
+      }
+      return data.message || "Training failed";
+    }
+
+    async function loadTrainingStatus() {
+      const response = await fetch("/api/training");
+      const data = await response.json();
+      const running = data.state === "running";
+      updateTrainingButton.disabled = running;
+      updateTrainingButton.textContent = running ? "Training" : "Update Training";
+      renderTrainStatus(trainingStatusText(data), data.state === "failed" ? "bad" : data.state === "succeeded" ? "ok" : "");
+      if (running && !trainingPoll) {
+        trainingPoll = window.setInterval(loadTrainingStatus, 5000);
+      }
+      if (!running && trainingPoll) {
+        window.clearInterval(trainingPoll);
+        trainingPoll = null;
+      }
+      if (data.state === "succeeded") {
+        await loadHealth();
+      }
+    }
+
+    async function startTraining() {
+      updateTrainingButton.disabled = true;
+      updateTrainingButton.textContent = "Training";
+      renderTrainStatus("Starting");
+      try {
+        const response = await fetch("/api/training/start", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{}"
+        });
+        const payload = await response.json();
+        if (!response.ok) {
+          throw new Error(payload.error || "Training start failed.");
+        }
+        renderTrainStatus(trainingStatusText(payload));
+        await loadTrainingStatus();
+      } catch (error) {
+        updateTrainingButton.disabled = false;
+        updateTrainingButton.textContent = "Update Training";
+        renderTrainStatus(error.message || "Training start failed.", "bad");
+      }
+    }
+
     async function addVerifiedAddress() {
       const value = addAddress.value.trim();
       if (!value) {
@@ -764,6 +856,7 @@ HTML = """<!doctype html>
 
     resolveButton.addEventListener("click", resolveAddress);
     addVerifiedButton.addEventListener("click", addVerifiedAddress);
+    updateTrainingButton.addEventListener("click", startTraining);
     clearButton.addEventListener("click", () => {
       address.value = "";
       lastResolution = null;
@@ -779,6 +872,9 @@ HTML = """<!doctype html>
 
     loadHealth().catch(() => {
       statusBox.innerHTML = "<span>Dataset</span><strong>unavailable</strong><span>References</span><strong>0</strong>";
+    });
+    loadTrainingStatus().catch(() => {
+      renderTrainStatus("Training status unavailable", "bad");
     });
   </script>
 </body>
@@ -807,6 +903,56 @@ def append_active_learning_feedback(row: Dict[str, object], path: Optional[Path]
         if write_header:
             writer.writeheader()
         writer.writerow(normalized)
+
+
+def feedback_override_keys(input_address: str, standardized_address: str = "") -> List[str]:
+    keys = []
+    for value in (input_address, standardized_address):
+        key = query_text_key(value)
+        if key and key not in keys:
+            keys.append(key)
+    return keys
+
+
+def load_feedback_overrides(resolver: Resolver, path: Optional[Path] = None) -> Dict[str, str]:
+    feedback_path = path or active_learning_feedback_csv_path()
+    if not feedback_path.exists():
+        return {}
+    overrides: Dict[str, str] = {}
+    missing_id_corrections: List[Dict[str, str]] = []
+    with feedback_path.open(newline="", encoding="utf-8") as handle:
+        for row in csv.DictReader(handle):
+            feedback_type = row.get("feedback_type", "").strip()
+            if feedback_type == "correct":
+                reference_id = row.get("predicted_match_id", "").strip()
+            elif feedback_type == "correction":
+                reference_id = row.get("correct_reference_id", "").strip()
+                if not reference_id:
+                    missing_id_corrections.append(row)
+                    continue
+            else:
+                continue
+            if reference_id not in resolver.reference_by_id:
+                continue
+            for key in feedback_override_keys(row.get("input_address", ""), row.get("standardized_address", "")):
+                overrides[key] = reference_id
+    if missing_id_corrections:
+        needed_canonicals = {
+            query_text_key(row.get("correct_canonical_address", ""))
+            for row in missing_id_corrections
+            if row.get("correct_canonical_address", "")
+        }
+        canonical_to_id = {
+            query_text_key(reference.canonical_address): reference_id
+            for reference_id, reference in resolver.reference_by_id.items()
+            if query_text_key(reference.canonical_address) in needed_canonicals
+        }
+        for row in missing_id_corrections:
+            reference_id = canonical_to_id.get(query_text_key(row.get("correct_canonical_address", "")), "")
+            if reference_id:
+                for key in feedback_override_keys(row.get("input_address", ""), row.get("standardized_address", "")):
+                    overrides[key] = reference_id
+    return overrides
 
 
 def address_record_csv_row(address_id: str, record: AddressRecord, source_note: str = "") -> Dict[str, str]:
@@ -910,13 +1056,33 @@ def update_reference_metadata(dataset_dir: Path) -> None:
 
 
 class ResolverService:
-    def __init__(self, dataset_dir: Path, model_path: Path) -> None:
+    def __init__(
+        self,
+        dataset_dir: Path,
+        model_path: Path,
+        train_dataset_dir: Path = DEFAULT_TRAIN_DATASET_DIR,
+        eval_dataset_dir: Path = DEFAULT_EVAL_DATASET_DIR,
+        training_output_dir: Path = DEFAULT_TRAINING_OUTPUT_DIR,
+        training_jobs: int = 4,
+    ) -> None:
         self.dataset_dir = dataset_dir
         self.model_path = model_path
+        self.train_dataset_dir = train_dataset_dir
+        self.eval_dataset_dir = eval_dataset_dir
+        self.training_output_dir = training_output_dir
+        self.training_jobs = max(1, training_jobs)
+        self.model_lock = threading.RLock()
+        self.training_lock = threading.RLock()
+        self.training_job: Dict[str, object] = {
+            "state": "idle",
+            "message": "",
+            "log_tail": [],
+        }
         reference_rows, _ = load_reference(dataset_dir / "reference_addresses.csv")
         city_lookup = build_city_lookup(reference_rows)
         self.resolver = Resolver(reference_rows, city_lookup)
         self.model, self.accept_threshold, self.review_threshold, self.model_metadata = load_model(model_path, self.resolver)
+        self.feedback_overrides = load_feedback_overrides(self.resolver)
         self.reference_count = len(reference_rows)
         self.examples = [row.canonical_address for row in reference_rows[:5]]
         self.next_reference_index = self.next_reference_number(reference_rows)
@@ -930,8 +1096,15 @@ class ResolverService:
 
     def resolve(self, raw_address: str) -> Dict[str, object]:
         parsed = self.resolver.parse(raw_address)
-        stage1 = self.resolver.resolve_stage1(parsed, review_threshold=self.review_threshold)
-        stage2 = self.model.resolve(parsed, accept_threshold=self.accept_threshold, review_threshold=self.review_threshold)
+        override = self.feedback_override(raw_address, parsed.standardized_address)
+        if override:
+            return override
+        with self.model_lock:
+            model = self.model
+            accept_threshold = self.accept_threshold
+            review_threshold = self.review_threshold
+        stage1 = self.resolver.resolve_stage1(parsed, review_threshold=review_threshold)
+        stage2 = model.resolve(parsed, accept_threshold=accept_threshold, review_threshold=review_threshold)
         combined = stage1 if stage1.predicted_match_id else stage2
         top_candidates = self.top_candidate_payload(combined)
         return {
@@ -945,6 +1118,43 @@ class ResolverService:
             "top_candidates": top_candidates,
             "stage1": self.resolution_summary(stage1),
             "stage2": self.resolution_summary(stage2),
+        }
+
+    def feedback_override(self, raw_address: str, standardized_address: str) -> Optional[Dict[str, object]]:
+        reference_id = ""
+        for key in feedback_override_keys(raw_address, standardized_address):
+            reference_id = self.feedback_overrides.get(key, "")
+            if reference_id:
+                break
+        reference = self.resolver.reference_by_id.get(reference_id)
+        if reference is None:
+            return None
+        top_candidates = [
+            {
+                "reference_id": reference.address_id,
+                "score": 1.0,
+                "canonical_address": reference.canonical_address,
+            }
+        ]
+        summary = {
+            "predicted_match_id": reference.address_id,
+            "predicted_canonical_address": reference.canonical_address,
+            "confidence": 1.0,
+            "needs_review": False,
+            "stage": "feedback_override",
+            "standardized_address": standardized_address,
+        }
+        return {
+            "input_address": raw_address,
+            "standardized_address": standardized_address,
+            "predicted_match_id": reference.address_id,
+            "predicted_canonical_address": reference.canonical_address,
+            "confidence": 1.0,
+            "needs_review": False,
+            "stage": "feedback_override",
+            "top_candidates": top_candidates,
+            "stage1": summary,
+            "stage2": summary,
         }
 
     def top_candidate_payload(self, resolution) -> List[Dict[str, object]]:
@@ -971,6 +1181,7 @@ class ResolverService:
         }
 
     def health(self) -> Dict[str, object]:
+        training_status = self.training_status()
         return {
             "dataset_name": self.dataset_name,
             "dataset_dir": str(self.dataset_dir),
@@ -978,6 +1189,8 @@ class ResolverService:
             "reference_count": self.reference_count,
             "accept_threshold": self.accept_threshold,
             "review_threshold": self.review_threshold,
+            "feedback_override_count": len(self.feedback_overrides),
+            "training_state": training_status["state"],
             "examples": self.examples,
         }
 
@@ -1164,13 +1377,168 @@ class ResolverService:
             "top_candidates": resolution["top_candidates"],
         }
         append_active_learning_feedback(row)
+        override_reference_id = ""
+        if feedback_type == "correct":
+            override_reference_id = str(resolution["predicted_match_id"] or "")
+        elif feedback_type == "correction":
+            override_reference_id = correct_reference_id
+        if override_reference_id in self.resolver.reference_by_id:
+            for key in feedback_override_keys(raw_address, str(resolution["standardized_address"])):
+                self.feedback_overrides[key] = override_reference_id
         return {
             "saved": True,
             "feedback_path": str(active_learning_feedback_csv_path()),
             "correct_reference_id": correct_reference_id,
             "correct_canonical_address": correct_canonical_address,
+            "override_applied": bool(override_reference_id),
             "reference_count": self.reference_count,
         }
+
+    def training_dataset_ready(self) -> bool:
+        return (
+            (self.train_dataset_dir / "reference_addresses.csv").exists()
+            and (self.train_dataset_dir / "queries.csv").exists()
+            and (self.eval_dataset_dir / "reference_addresses.csv").exists()
+            and (self.eval_dataset_dir / "queries.csv").exists()
+        )
+
+    def feedback_row_count(self) -> int:
+        path = active_learning_feedback_csv_path()
+        if not path.exists():
+            return 0
+        with path.open(newline="", encoding="utf-8") as handle:
+            return sum(1 for _row in csv.DictReader(handle))
+
+    def training_status(self) -> Dict[str, object]:
+        with self.training_lock:
+            status = dict(self.training_job)
+            status["log_tail"] = list(status.get("log_tail", []))
+        status["train_dataset_dir"] = str(self.train_dataset_dir)
+        status["eval_dataset_dir"] = str(self.eval_dataset_dir)
+        status["feedback_path"] = str(active_learning_feedback_csv_path())
+        status["feedback_rows"] = self.feedback_row_count()
+        status["training_dataset_ready"] = self.training_dataset_ready()
+        return status
+
+    def start_training(self) -> Dict[str, object]:
+        if not self.training_dataset_ready():
+            raise ValueError(
+                "Training datasets are missing. Generate datasets/fresh_60k_active_v2 first, "
+                "or start the app with --train-dataset-dir and --eval-dataset-dir."
+            )
+        feedback_rows = self.feedback_row_count()
+        if feedback_rows <= 0:
+            raise ValueError("No feedback rows found yet. Mark results Correct/Wrong or Save Correction before updating training.")
+        with self.training_lock:
+            if self.training_job.get("state") == "running":
+                return self.training_status()
+            timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+            run_dir = self.training_output_dir / timestamp
+            temp_model_path = self.model_path.with_name(f"{self.model_path.stem}.training-{timestamp}{self.model_path.suffix}")
+            log_path = run_dir / "training.log"
+            command = [
+                sys.executable,
+                str(PROJECT_ROOT / "src" / "address_resolver.py"),
+                "--mode",
+                "fit-predict",
+                "--train-dataset-dir",
+                str(self.train_dataset_dir),
+                "--eval-dataset-dir",
+                str(self.eval_dataset_dir),
+                "--active-learning-feedback-csv",
+                str(active_learning_feedback_csv_path()),
+                "--model-path",
+                str(temp_model_path),
+                "--output-dir",
+                str(run_dir),
+                "--compare-variants",
+                "--jobs",
+                str(self.training_jobs),
+            ]
+            self.training_job = {
+                "state": "running",
+                "message": "Training started",
+                "started_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "finished_at": "",
+                "command": command,
+                "run_dir": str(run_dir),
+                "log_path": str(log_path),
+                "temp_model_path": str(temp_model_path),
+                "returncode": None,
+                "log_tail": [],
+                "evaluation": {},
+            }
+            thread = threading.Thread(
+                target=self.run_training_job,
+                args=(command, run_dir, temp_model_path, log_path),
+                daemon=True,
+            )
+            thread.start()
+            return self.training_status()
+
+    def append_training_log_line(self, line: str) -> None:
+        with self.training_lock:
+            log_tail = list(self.training_job.get("log_tail", []))
+            log_tail.append(line.rstrip())
+            self.training_job["log_tail"] = log_tail[-40:]
+
+    def reload_model(self) -> None:
+        model, accept_threshold, review_threshold, metadata = load_model(self.model_path, self.resolver)
+        with self.model_lock:
+            self.model = model
+            self.accept_threshold = accept_threshold
+            self.review_threshold = review_threshold
+            self.model_metadata = metadata
+
+    def run_training_job(self, command: List[str], run_dir: Path, temp_model_path: Path, log_path: Path) -> None:
+        run_dir.mkdir(parents=True, exist_ok=True)
+        returncode = 1
+        try:
+            with log_path.open("w", encoding="utf-8") as log_handle:
+                process = subprocess.Popen(
+                    command,
+                    cwd=PROJECT_ROOT,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
+                )
+                with self.training_lock:
+                    self.training_job["pid"] = process.pid
+                assert process.stdout is not None
+                for line in process.stdout:
+                    log_handle.write(line)
+                    log_handle.flush()
+                    self.append_training_log_line(line)
+                returncode = process.wait()
+            evaluation = {}
+            evaluation_path = run_dir / "evaluation.json"
+            if evaluation_path.exists():
+                try:
+                    evaluation = json.loads(evaluation_path.read_text(encoding="utf-8"))
+                except json.JSONDecodeError:
+                    evaluation = {}
+            if returncode == 0 and temp_model_path.exists():
+                temp_model_path.replace(self.model_path)
+                self.reload_model()
+                state = "succeeded"
+                message = "Training complete; model reloaded."
+            else:
+                state = "failed"
+                message = f"Training failed with return code {returncode}."
+        except Exception as exc:  # pragma: no cover - surfaced through app status
+            state = "failed"
+            message = str(exc)
+            evaluation = {}
+        finally:
+            if temp_model_path.exists() and state != "succeeded":
+                temp_model_path.unlink()
+            with self.training_lock:
+                self.training_job["state"] = state
+                self.training_job["message"] = message
+                self.training_job["finished_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+                self.training_job["returncode"] = returncode
+                self.training_job["evaluation"] = evaluation
 
 
 def reference_csv_path(dataset_dir: Path) -> Path:
@@ -1392,6 +1760,9 @@ class ResolverRequestHandler(BaseHTTPRequestHandler):
         if route == "/api/health":
             self.send_json(self.service.health())
             return
+        if route == "/api/training":
+            self.send_json(self.service.training_status())
+            return
         self.send_json({"error": "Not found"}, status=HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:
@@ -1401,6 +1772,9 @@ class ResolverRequestHandler(BaseHTTPRequestHandler):
             return
         if route == "/api/feedback":
             self.record_feedback()
+            return
+        if route == "/api/training/start":
+            self.start_training()
             return
         if route != "/api/resolve":
             self.send_json({"error": "Not found"}, status=HTTPStatus.NOT_FOUND)
@@ -1415,6 +1789,17 @@ class ResolverRequestHandler(BaseHTTPRequestHandler):
             self.send_json(self.service.resolve(raw_address))
         except json.JSONDecodeError:
             self.send_json({"error": "Request body must be JSON."}, status=HTTPStatus.BAD_REQUEST)
+        except Exception as exc:  # pragma: no cover - returned to local UI
+            self.send_json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    def start_training(self) -> None:
+        try:
+            self.read_json_body()
+            self.send_json(self.service.start_training())
+        except json.JSONDecodeError:
+            self.send_json({"error": "Request body must be JSON."}, status=HTTPStatus.BAD_REQUEST)
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
         except Exception as exc:  # pragma: no cover - returned to local UI
             self.send_json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
 
@@ -1479,6 +1864,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--real-address-format", default="auto", choices=["auto", "maris", "maris_parcels", "nad", "openaddresses", "address_record", "generic"], help="Input schema for custom --real-address-input values.")
     parser.add_argument("--rebuild-reference-cache", action="store_true", help="Rebuild the app reference cache from --real-address-input before starting.")
     parser.add_argument("--model-path", type=Path, default=DEFAULT_MODEL_PATH, help="Saved Stage 2 model JSON.")
+    parser.add_argument("--train-dataset-dir", type=Path, default=DEFAULT_TRAIN_DATASET_DIR, help="Dataset directory used by the app Update Training button.")
+    parser.add_argument("--eval-dataset-dir", type=Path, default=DEFAULT_EVAL_DATASET_DIR, help="Evaluation dataset directory used by the app Update Training button.")
+    parser.add_argument("--training-output-dir", type=Path, default=DEFAULT_TRAINING_OUTPUT_DIR, help="Run output directory used by the app Update Training button.")
+    parser.add_argument("--training-jobs", type=int, default=4, help="Worker count used by the app Update Training button.")
     return parser.parse_args()
 
 
@@ -1490,6 +1879,9 @@ def main() -> None:
     else:
         source_specs = [(path.expanduser().resolve(), source_format) for path, source_format in default_source_specs()]
     model_path = args.model_path.expanduser().resolve()
+    train_dataset_dir = args.train_dataset_dir.expanduser().resolve()
+    eval_dataset_dir = args.eval_dataset_dir.expanduser().resolve()
+    training_output_dir = args.training_output_dir.expanduser().resolve()
     if (
         dataset_dir == DEFAULT_DATASET_DIR.resolve()
         and not reference_cache_ready(dataset_dir)
@@ -1506,7 +1898,14 @@ def main() -> None:
         raise SystemExit(f"Model JSON not found: {model_path}")
 
     print(f"Loading resolver reference cache from {reference_csv_path(dataset_dir)}...")
-    service = ResolverService(dataset_dir, model_path)
+    service = ResolverService(
+        dataset_dir,
+        model_path,
+        train_dataset_dir=train_dataset_dir,
+        eval_dataset_dir=eval_dataset_dir,
+        training_output_dir=training_output_dir,
+        training_jobs=args.training_jobs,
+    )
     ResolverRequestHandler.service = service
     server = ThreadingHTTPServer((args.host, args.port), ResolverRequestHandler)
     print(f"Ady Resolver app running at http://{args.host}:{args.port}")
