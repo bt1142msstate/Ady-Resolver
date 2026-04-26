@@ -29,8 +29,9 @@ an input address is standardized, scored, and matched.
   street/city features, rank/margin features, ZIP/city consistency,
   source-quality weighting, and stronger house-number mismatch penalties.
 - Typo handling for street names, street suffixes, city names, directionals,
-  reordered house-number positions, and compounded input errors such as
-  `101 candoowse sr newtooon MS` or `candace 101 se netooailn missppi`.
+  reordered house-number positions, scrambled address component order, and
+  compounded input errors such as `101 candoowse sr newtooon MS`,
+  `candace 101 se netooailn missppi`, or `new1on candace se 101 mississipi`.
 - Data-quality guards for obvious parcel/location artifacts such as zero house
   numbers, non-numeric house numbers, side-of-road markers, `N OF ...`
   descriptors, `DOD` note rows, and duplicated terminal street types.
@@ -243,9 +244,10 @@ The default generator setting is now `12` noisy positives per reference; use
 `16` or more when you want a slower, harder training set for confidence
 calibration. Hard profiles include reordered examples where the house number
 appears after the street name, heavy city/state typos, street-type typos such as
-`ST -> SE`, and dropped house-number digits. The resulting model can be passed
-to the app with `--model-path`, and the app can use any reference directory
-containing a `reference_addresses.csv`.
+`ST -> SE`, dropped house-number digits, and scrambled component order where
+city/state, house number, street name, and street type may appear in different
+positions. The resulting model can be passed to the app with `--model-path`, and
+the app can use any reference directory containing a `reference_addresses.csv`.
 
 Important coverage note: no open public web download tested here proves every
 current Mississippi address is present. The generator's

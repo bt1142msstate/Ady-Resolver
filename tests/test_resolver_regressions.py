@@ -94,6 +94,22 @@ class ResolverRegressionTests(unittest.TestCase):
         candidate_ids = self.resolver.candidate_ids(parsed, limit=10)
         self.assertIn("TARGET", candidate_ids)
 
+    def test_scrambled_component_order_resolves(self) -> None:
+        examples = [
+            "newton ms candace st 101",
+            "st candace 101 newton ms",
+            "candace newton 101 st ms",
+            "ms 101 newton candace st",
+            "Netooailn Missppi candece se 101",
+            "new1on candace se 101 mississipi",
+        ]
+
+        for raw in examples:
+            with self.subTest(raw=raw):
+                parsed = self.resolver.parse(raw)
+                resolution = self.resolver.resolve_stage1(parsed, review_threshold=0.8)
+                self.assertEqual("TARGET", resolution.predicted_match_id)
+
     def test_exact_city_keeps_southeast_suffix_direction(self) -> None:
         parsed = self.resolver.parse("101 candace se newton ms")
         self.assertEqual("101 CANDACE SE, NEWTON MS", parsed.standardized_address)

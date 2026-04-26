@@ -692,24 +692,52 @@ def looks_like_street_descriptor(token: str) -> bool:
     )
 
 
-def extract_reordered_house_number(tokens: List[str]) -> str:
-    max_index = min(len(tokens) - 1, 4)
-    for idx in range(1, max_index):
+def extract_zip_code(tokens: List[str]) -> str:
+    for idx in range(len(tokens) - 1, -1, -1):
         token = tokens[idx]
-        if not any(ch.isdigit() for ch in token) or token.startswith("#"):
+        if re.fullmatch(r"\d{5}", token):
+            del tokens[idx]
+            return token
+    if tokens and re.fullmatch(r"\d{4}", tokens[-1]):
+        return tokens.pop()
+    return ""
+
+
+def house_number_score(tokens: Sequence[str], idx: int) -> Tuple[int, int, int]:
+    token = tokens[idx]
+    digit_count = sum(1 for char in token if char.isdigit())
+    street_context = 0
+    if idx > 0 and not looks_like_street_descriptor(tokens[idx - 1]):
+        street_context += 1
+    if idx + 1 < len(tokens) and looks_like_street_descriptor(tokens[idx + 1]):
+        street_context += 1
+    return digit_count, street_context, -idx
+
+
+def looks_like_house_number_token(token: str) -> bool:
+    if token.startswith("#") or not any(ch.isdigit() for ch in token):
+        return False
+    digit_count = sum(1 for char in token if char.isdigit())
+    alpha_count = sum(1 for char in token if char.isalpha())
+    return token[0].isdigit() or digit_count >= alpha_count
+
+
+def extract_house_number(tokens: List[str]) -> str:
+    if tokens and looks_like_house_number_token(tokens[0]):
+        return tokens.pop(0)
+
+    candidates: List[Tuple[Tuple[int, int, int], int]] = []
+    for idx, token in enumerate(tokens):
+        if not looks_like_house_number_token(token):
             continue
         previous = tokens[idx - 1]
         previous_is_unit = canonical_abbrev(previous.lstrip("#"), UNIT_TYPE_TO_FULL, FULL_TO_UNIT_TYPE) in UNIT_TYPE_TO_FULL
         if previous_is_unit:
             continue
-        prefix = tokens[:idx]
-        suffix = tokens[idx + 1:]
-        if not prefix or not suffix:
-            continue
-        if all(looks_like_street_descriptor(part) for part in prefix):
-            continue
-        del tokens[idx]
-        return token
+        candidates.append((house_number_score(tokens, idx), idx))
+    if candidates:
+        _, idx = max(candidates)
+        return tokens.pop(idx)
     return ""
 
 
@@ -720,6 +748,17 @@ def contextual_street_type_token(token: str) -> str:
     return canonical_street_type_token(normalized) or CONTEXTUAL_STREET_TYPE_TYPO_ALIASES.get(normalized, "")
 
 
+def state_from_candidate(candidate_tokens: Sequence[str]) -> str:
+    candidate = " ".join(candidate_tokens)
+    if candidate in VALID_STATES:
+        return candidate
+    if candidate in STATE_NAME_TO_ABBREV:
+        return STATE_NAME_TO_ABBREV[candidate]
+    if candidate in STATE_TYPO_ALIASES:
+        return STATE_TYPO_ALIASES[candidate]
+    return ""
+
+
 def extract_state(tokens: List[str], city_lookup: Optional[Dict[Tuple[str, ...], str]] = None) -> str:
     if not tokens:
         return ""
@@ -727,58 +766,116 @@ def extract_state(tokens: List[str], city_lookup: Optional[Dict[Tuple[str, ...],
 
     max_width = min(3, len(tokens))
     for width in range(max_width, 0, -1):
-        candidate = " ".join(tokens[-width:])
-        if candidate in VALID_STATES:
-            del tokens[-width:]
-            return candidate
-        if candidate in STATE_NAME_TO_ABBREV:
-            del tokens[-width:]
-            return STATE_NAME_TO_ABBREV[candidate]
+        for start in range(len(tokens) - width, -1, -1):
+            state = state_from_candidate(tokens[start:start + width])
+            if state:
+                del tokens[start:start + width]
+                return state
 
     fuzzy_widths = (3, 2, 1)
     for width in fuzzy_widths:
         if len(tokens) < width:
             continue
-        candidate_tokens = tuple(tokens[-width:])
-        if candidate_tokens in city_lookup:
-            continue
-        if any(
-            canonical_street_type_token(token) in STREET_TYPE_TO_FULL
-            for token in candidate_tokens
-        ):
-            continue
-        candidate_key = " ".join(candidate_tokens)
-        if candidate_key in STATE_TYPO_ALIASES:
-            del tokens[-width:]
-            return STATE_TYPO_ALIASES[candidate_key]
-        candidate = " ".join(tokens[-width:])
-        minimum_score = 0.88 if width == 1 else 0.84
-        match, best_score, second_score = closest_choice(candidate, tuple(STATE_NAME_TO_ABBREV), minimum_score=minimum_score)
-        if match and best_score - second_score >= 0.08:
-            del tokens[-width:]
-            return STATE_NAME_TO_ABBREV[match]
+        for start in range(len(tokens) - width, -1, -1):
+            candidate_tokens = tuple(tokens[start:start + width])
+            if candidate_tokens in city_lookup:
+                continue
+            if any(canonical_street_type_token(token) in STREET_TYPE_TO_FULL for token in candidate_tokens):
+                continue
+            candidate = " ".join(candidate_tokens)
+            minimum_score = 0.88 if width == 1 else 0.84
+            match, best_score, second_score = closest_choice(candidate, tuple(STATE_NAME_TO_ABBREV), minimum_score=minimum_score)
+            if match and best_score - second_score >= 0.08:
+                del tokens[start:start + width]
+                return STATE_NAME_TO_ABBREV[match]
     return ""
+
+
+def city_candidate_looks_like_street(tokens: Sequence[str], start: int, width: int) -> bool:
+    after = start + width
+    if after < len(tokens) and canonical_street_type_token(tokens[after], allow_typos=False):
+        return True
+    return False
+
+
+def extract_city(tokens: List[str], city_lookup: Dict[Tuple[str, ...], str], state: str, zip_code: str) -> str:
+    if not tokens:
+        return ""
+    for width in range(min(3, len(tokens)), 0, -1):
+        candidate = tuple(tokens[-width:])
+        remaining_required = 1 if state or zip_code else 2
+        if candidate in city_lookup and len(tokens) - width >= remaining_required:
+            city = city_lookup[candidate]
+            del tokens[-width:]
+            return city
+
+    for width in range(min(3, len(tokens)), 0, -1):
+        for start in range(len(tokens) - width, -1, -1):
+            candidate = tuple(tokens[start:start + width])
+            if candidate not in city_lookup:
+                continue
+            if any(any(ch.isdigit() for ch in token) for token in candidate):
+                continue
+            if len(tokens) - width < 1:
+                continue
+            if city_candidate_looks_like_street(tokens, start, width):
+                continue
+            city = city_lookup[candidate]
+            del tokens[start:start + width]
+            return city
+    return ""
+
+
+def parse_street_tokens(tokens: List[str], allow_contextual_type: bool = False) -> Tuple[str, str, str, str]:
+    tokens = list(tokens)
+    predir = ""
+    suffixdir = ""
+    street_type = ""
+
+    def type_from_token(token: str) -> str:
+        return contextual_street_type_token(token) if allow_contextual_type else canonical_street_type_token(token)
+
+    if tokens:
+        maybe_street_type = type_from_token(tokens[-1])
+        if maybe_street_type:
+            street_type = maybe_street_type
+            tokens.pop()
+    if tokens and not street_type:
+        maybe_street_type = type_from_token(tokens[0])
+        if maybe_street_type and len(tokens) > 1:
+            street_type = maybe_street_type
+            tokens.pop(0)
+    if tokens and not street_type:
+        for idx in range(len(tokens) - 1, -1, -1):
+            maybe_street_type = type_from_token(tokens[idx])
+            if maybe_street_type and len(tokens) > 1:
+                street_type = maybe_street_type
+                del tokens[idx]
+                break
+
+    if tokens and canonical_abbrev(tokens[0], DIRECTION_TO_FULL, FULL_TO_DIRECTION) in DIRECTION_TO_FULL and len(tokens) > 1:
+        predir = canonical_abbrev(tokens.pop(0), DIRECTION_TO_FULL, FULL_TO_DIRECTION)
+
+    if tokens and canonical_abbrev(tokens[-1], DIRECTION_TO_FULL, FULL_TO_DIRECTION) in DIRECTION_TO_FULL and len(tokens) > 1:
+        suffixdir = canonical_abbrev(tokens.pop(), DIRECTION_TO_FULL, FULL_TO_DIRECTION)
+
+    if not tokens and predir and street_type:
+        street_name = DIRECTION_TO_FULL.get(predir, predir)
+        predir = ""
+    else:
+        street_name = " ".join(tokens)
+    return predir, street_name, street_type, suffixdir
 
 
 def parse_query_address(raw: str, city_lookup: Dict[Tuple[str, ...], str]) -> ParsedAddress:
     normalized = normalize_text(raw)
     tokens = normalized.split()
 
-    zip_code = ""
-    if tokens and re.fullmatch(r"\d{3,5}", tokens[-1]):
-        zip_code = tokens.pop()
+    zip_code = extract_zip_code(tokens)
 
     state = extract_state(tokens, city_lookup)
 
-    city = ""
-    if tokens:
-        for width in range(min(3, len(tokens)), 0, -1):
-            candidate = tuple(tokens[-width:])
-            remaining_required = 1 if state or zip_code else 2
-            if candidate in city_lookup and len(tokens) - width >= remaining_required:
-                city = city_lookup[candidate]
-                del tokens[-width:]
-                break
+    city = extract_city(tokens, city_lookup, state, zip_code)
 
     unit_type = ""
     unit_value = ""
@@ -786,11 +883,7 @@ def parse_query_address(raw: str, city_lookup: Dict[Tuple[str, ...], str]) -> Pa
         unit_type = canonical_abbrev(tokens.pop(0).lstrip("#"), UNIT_TYPE_TO_FULL, FULL_TO_UNIT_TYPE)
         unit_value = tokens.pop(0)
 
-    house_number = ""
-    if tokens and any(ch.isdigit() for ch in tokens[0]):
-        house_number = tokens.pop(0)
-    if not house_number:
-        house_number = extract_reordered_house_number(tokens)
+    house_number = extract_house_number(tokens)
 
     if len(tokens) >= 2:
         unit_pos = None
@@ -811,27 +904,7 @@ def parse_query_address(raw: str, city_lookup: Dict[Tuple[str, ...], str]) -> Pa
                 del tokens[idx]
                 break
 
-    predir = ""
-    suffixdir = ""
-    street_type = ""
-
-    if tokens and canonical_abbrev(tokens[0], DIRECTION_TO_FULL, FULL_TO_DIRECTION) in DIRECTION_TO_FULL:
-        predir = canonical_abbrev(tokens.pop(0), DIRECTION_TO_FULL, FULL_TO_DIRECTION)
-
-    if tokens and canonical_abbrev(tokens[-1], DIRECTION_TO_FULL, FULL_TO_DIRECTION) in DIRECTION_TO_FULL:
-        suffixdir = canonical_abbrev(tokens.pop(), DIRECTION_TO_FULL, FULL_TO_DIRECTION)
-
-    if tokens:
-        maybe_street_type = canonical_street_type_token(tokens[-1])
-        if maybe_street_type:
-            street_type = maybe_street_type
-            tokens.pop()
-
-    if not tokens and predir and street_type:
-        street_name = DIRECTION_TO_FULL.get(predir, predir)
-        predir = ""
-    else:
-        street_name = " ".join(tokens)
+    predir, street_name, street_type, suffixdir = parse_street_tokens(tokens)
 
     standardized = standardize_parts(
         house_number,
@@ -944,6 +1017,7 @@ class Resolver:
         cached = self._parse_cache.get(raw)
         if cached is None:
             cached = parse_query_address(raw, self.city_lookup)
+            cached = self.apply_fuzzy_city_anywhere(cached)
             cached = self.apply_fuzzy_city_suffix(cached)
             self._parse_cache[raw] = cached
         return cached
@@ -958,20 +1032,14 @@ class Resolver:
                     choices.add(city)
         return tuple(sorted(choices))
 
-    def apply_fuzzy_city_suffix(self, parsed: ParsedAddress) -> ParsedAddress:
-        if parsed.city or not parsed.street_name:
-            return parsed
-
-        street_tokens = parsed.street_name.split()
-        if len(street_tokens) < 2:
-            return parsed
-
+    def fuzzy_city_choices(self, parsed: ParsedAddress) -> Tuple[Tuple[str, ...], bool]:
         city_choices = self.locality_city_choices(parsed)
-        allow_global_city_match = False
-        if not city_choices:
-            if parsed.state or parsed.zip_code or not parsed.house_number:
-                return parsed
-            city_choices = tuple(
+        if city_choices:
+            return city_choices, False
+        if parsed.state or parsed.zip_code or not parsed.house_number:
+            return (), False
+        return (
+            tuple(
                 sorted(
                     {
                         city
@@ -980,10 +1048,96 @@ class Resolver:
                         if city and count >= 2
                     }
                 )
-            )
-            allow_global_city_match = True
-            if not city_choices:
-                return parsed
+            ),
+            True,
+        )
+
+    def street_tokens_for_reparse(self, parsed: ParsedAddress) -> List[str]:
+        tokens: List[str] = []
+        if parsed.predir:
+            tokens.append(parsed.predir)
+        if parsed.street_name:
+            tokens.extend(parsed.street_name.split())
+        if parsed.street_type:
+            tokens.append(parsed.street_type)
+        if parsed.suffixdir:
+            tokens.append(parsed.suffixdir)
+        return tokens
+
+    def apply_fuzzy_city_anywhere(self, parsed: ParsedAddress) -> ParsedAddress:
+        if parsed.city or not parsed.street_name:
+            return parsed
+
+        street_tokens = self.street_tokens_for_reparse(parsed)
+        if len(street_tokens) < 2:
+            return parsed
+
+        city_choices, allow_global_city_match = self.fuzzy_city_choices(parsed)
+        if not city_choices:
+            return parsed
+
+        best: Tuple[float, int, int, str] = (0.0, 0, 0, "")
+        best_start = -1
+        best_width = 0
+        max_width = min(3, len(street_tokens) - 1)
+        for width in range(max_width, 0, -1):
+            for start in range(0, len(street_tokens) - width + 1):
+                candidate_tokens = street_tokens[start:start + width]
+                if all(looks_like_street_descriptor(token) for token in candidate_tokens):
+                    continue
+                candidate = " ".join(candidate_tokens)
+                if allow_global_city_match:
+                    minimum_score = 0.86 if width == 1 else 0.82
+                elif parsed.house_number and parsed.state:
+                    minimum_score = 0.62 if width == 1 else 0.60
+                else:
+                    minimum_score = 0.80 if width == 1 else 0.76
+                city_match, best_score, second_score = closest_choice(candidate, city_choices, minimum_score=minimum_score)
+                required_margin = 0.08 if allow_global_city_match else 0.05
+                if not city_match or (best_score - second_score < required_margin and best_score < 0.90):
+                    continue
+                position_score = 1 if start in {0, len(street_tokens) - width} else 0
+                candidate_score = (best_score, position_score, width, city_match)
+                if candidate_score > best:
+                    best = candidate_score
+                    best_start = start
+                    best_width = width
+
+        if not best[3]:
+            return parsed
+
+        remaining_tokens = street_tokens[:best_start] + street_tokens[best_start + best_width:]
+        predir, street_name, street_type, suffixdir = parse_street_tokens(remaining_tokens, allow_contextual_type=True)
+        if not street_name:
+            return parsed
+
+        state = parsed.state
+        if allow_global_city_match and not state:
+            states = {candidate_state for candidate_state in self.states_by_city.get(best[3], ()) if candidate_state}
+            if len(states) == 1:
+                state = next(iter(states))
+
+        return rebuild_parsed(
+            parsed,
+            predir=predir,
+            street_name=street_name,
+            street_type=street_type,
+            suffixdir=suffixdir,
+            city=best[3],
+            state=state,
+        )
+
+    def apply_fuzzy_city_suffix(self, parsed: ParsedAddress) -> ParsedAddress:
+        if parsed.city or not parsed.street_name:
+            return parsed
+
+        street_tokens = parsed.street_name.split()
+        if len(street_tokens) < 2:
+            return parsed
+
+        city_choices, allow_global_city_match = self.fuzzy_city_choices(parsed)
+        if not city_choices:
+            return parsed
 
         max_width = min(3, len(street_tokens) - 1)
         for width in range(max_width, 0, -1):

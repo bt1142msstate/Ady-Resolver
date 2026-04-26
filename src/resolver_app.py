@@ -114,18 +114,22 @@ HTML = """<!doctype html>
   <title>Ady Resolver</title>
   <style>
     :root {
-      color-scheme: light;
-      --bg: #f6f7f9;
-      --panel: #ffffff;
-      --ink: #18212f;
-      --muted: #667085;
-      --line: #d9dee7;
-      --accent: #1565c0;
-      --accent-dark: #0d47a1;
-      --good: #147d4f;
-      --warn: #a15c07;
-      --bad: #b42318;
-      --shadow: 0 12px 28px rgba(16, 24, 40, 0.08);
+      color-scheme: dark;
+      --bg: #0b0d10;
+      --panel: #151a20;
+      --panel-soft: #101419;
+      --panel-raised: #1b222a;
+      --ink: #f3f6f8;
+      --muted: #9aa5b1;
+      --line: #2a333d;
+      --line-strong: #394653;
+      --accent: #2dd4bf;
+      --accent-dark: #14b8a6;
+      --accent-ink: #061816;
+      --good: #34d399;
+      --warn: #fbbf24;
+      --bad: #fb7185;
+      --shadow: 0 20px 60px rgba(0, 0, 0, 0.38);
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
 
@@ -133,28 +137,30 @@ HTML = """<!doctype html>
 
     body {
       margin: 0;
-      background: var(--bg);
+      background:
+        linear-gradient(180deg, rgba(45, 212, 191, 0.08), transparent 260px),
+        var(--bg);
       color: var(--ink);
       min-height: 100vh;
     }
 
     .shell {
-      width: min(1120px, calc(100vw - 32px));
+      width: min(1180px, calc(100vw - 32px));
       margin: 0 auto;
-      padding: 28px 0 40px;
+      padding: 30px 0 44px;
     }
 
     header {
       display: flex;
       justify-content: space-between;
       gap: 24px;
-      align-items: flex-end;
-      padding-bottom: 18px;
+      align-items: center;
+      padding: 2px 0 20px;
       border-bottom: 1px solid var(--line);
     }
 
     h1 {
-      font-size: 28px;
+      font-size: 30px;
       line-height: 1.15;
       margin: 0 0 6px;
       letter-spacing: 0;
@@ -175,6 +181,10 @@ HTML = """<!doctype html>
       font-size: 13px;
       color: var(--muted);
       text-align: right;
+      background: rgba(21, 26, 32, 0.78);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px 12px;
     }
 
     .status strong { color: var(--ink); font-weight: 650; }
@@ -182,8 +192,8 @@ HTML = """<!doctype html>
     main {
       display: grid;
       grid-template-columns: minmax(0, 1fr) 360px;
-      gap: 18px;
-      margin-top: 20px;
+      gap: 20px;
+      margin-top: 22px;
       align-items: start;
     }
 
@@ -192,6 +202,7 @@ HTML = """<!doctype html>
       border: 1px solid var(--line);
       border-radius: 8px;
       box-shadow: var(--shadow);
+      overflow: hidden;
     }
 
     .workspace { padding: 18px; }
@@ -201,21 +212,25 @@ HTML = """<!doctype html>
       font-size: 13px;
       font-weight: 700;
       margin-bottom: 8px;
+      color: #d6dde5;
     }
 
     textarea,
     input {
       width: 100%;
-      border: 1px solid #b7c0cf;
+      border: 1px solid var(--line-strong);
       border-radius: 8px;
       padding: 12px 13px;
       color: var(--ink);
       font: inherit;
       font-size: 16px;
       line-height: 1.45;
-      background: #fff;
+      background: var(--panel-soft);
       outline: none;
     }
+
+    textarea::placeholder,
+    input::placeholder { color: #697581; }
 
     textarea {
       min-height: 96px;
@@ -229,7 +244,7 @@ HTML = """<!doctype html>
     textarea:focus,
     input:focus {
       border-color: var(--accent);
-      box-shadow: 0 0 0 3px rgba(21, 101, 192, 0.16);
+      box-shadow: 0 0 0 3px rgba(45, 212, 191, 0.16);
     }
 
     .controls {
@@ -240,24 +255,25 @@ HTML = """<!doctype html>
     }
 
     button {
-      border: 0;
+      border: 1px solid var(--line-strong);
       border-radius: 8px;
       padding: 10px 14px;
       font: inherit;
       font-size: 14px;
       font-weight: 700;
       cursor: pointer;
-      background: #e8edf5;
+      background: var(--panel-raised);
       color: var(--ink);
     }
 
     button.primary {
       background: var(--accent);
-      color: #fff;
+      border-color: var(--accent);
+      color: var(--accent-ink);
     }
 
     button.primary:hover { background: var(--accent-dark); }
-    button:hover { filter: brightness(0.98); }
+    button:hover { border-color: #4b5a68; }
     button:disabled { opacity: 0.55; cursor: default; }
 
     .hint {
@@ -300,9 +316,9 @@ HTML = """<!doctype html>
       white-space: nowrap;
     }
 
-    .badge.match { color: var(--good); background: #e8f5ef; }
-    .badge.review { color: var(--warn); background: #fff4df; }
-    .badge.none { color: var(--bad); background: #ffebe9; }
+    .badge.match { color: #04130e; background: var(--good); }
+    .badge.review { color: #1d1300; background: var(--warn); }
+    .badge.none { color: #2a050c; background: var(--bad); }
 
     .confidence {
       font-size: 13px;
@@ -311,10 +327,10 @@ HTML = """<!doctype html>
     }
 
     .answer {
-      border: 1px solid #cdd6e3;
+      border: 1px solid var(--line-strong);
       border-radius: 8px;
       padding: 14px;
-      background: #fbfcfe;
+      background: var(--panel-soft);
       margin-bottom: 14px;
     }
 
@@ -337,6 +353,7 @@ HTML = """<!doctype html>
       border-radius: 8px;
       padding: 10px;
       min-height: 62px;
+      background: rgba(255, 255, 255, 0.02);
     }
 
     .kv span {
@@ -359,9 +376,10 @@ HTML = """<!doctype html>
     .side h2 {
       font-size: 15px;
       line-height: 1.2;
-      padding: 14px 14px 10px;
+      padding: 15px 14px 11px;
       margin: 0;
       border-bottom: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.02);
     }
 
     .examples {
@@ -415,7 +433,7 @@ HTML = """<!doctype html>
       border: 1px solid var(--line);
       border-radius: 8px;
       padding: 12px;
-      background: #fff;
+      background: var(--panel-soft);
       margin-top: 14px;
       display: grid;
       gap: 10px;
@@ -452,7 +470,7 @@ HTML = """<!doctype html>
 
     .example {
       text-align: left;
-      background: #f8fafc;
+      background: var(--panel-soft);
       border: 1px solid var(--line);
       color: var(--ink);
       font-weight: 600;
@@ -473,12 +491,12 @@ HTML = """<!doctype html>
       border: 1px solid var(--line);
       border-radius: 8px;
       padding: 10px;
-      background: #fff;
+      background: var(--panel-soft);
     }
 
     .score {
       font-variant-numeric: tabular-nums;
-      color: var(--accent-dark);
+      color: var(--accent);
       font-weight: 800;
       font-size: 13px;
     }
@@ -497,8 +515,8 @@ HTML = """<!doctype html>
     }
 
     .error {
-      border: 1px solid #f1a29b;
-      background: #fff5f4;
+      border: 1px solid rgba(251, 113, 133, 0.55);
+      background: rgba(251, 113, 133, 0.10);
       color: var(--bad);
       border-radius: 8px;
       padding: 12px;

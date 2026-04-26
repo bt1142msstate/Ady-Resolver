@@ -21,6 +21,7 @@ from address_dataset_generator import (  # noqa: E402
     op_house_after_street_name,
     op_heavy_city_typo_with_state,
     op_reordered_locality_typo,
+    op_scrambled_component_order,
     render_address,
 )
 
@@ -178,7 +179,33 @@ class GeneratorNoiseTests(unittest.TestCase):
     def test_reordered_and_missing_digit_ops_are_in_training_pools(self) -> None:
         self.assertIn(op_house_after_street_name, MEDIUM_OPS)
         self.assertIn(op_reordered_locality_typo, HARD_OPS)
+        self.assertIn(op_scrambled_component_order, HARD_OPS)
         self.assertIn(op_house_drop_digit, HARD_OPS)
+
+    def test_scrambled_component_order_can_move_locality_and_house(self) -> None:
+        record = AddressRecord(
+            address_id="REF_TEST",
+            house_number="101",
+            predir="",
+            street_name="Candace",
+            street_type="ST",
+            suffixdir="",
+            unit_type="",
+            unit_value="",
+            city="Newton",
+            state="MS",
+            zip_code="39345",
+        )
+        style = RenderStyle()
+
+        tags = op_scrambled_component_order(record, style, random.Random(11))
+        rendered = render_address(record, style).lower()
+
+        self.assertIsNotNone(tags)
+        self.assertIn("component_order_shuffle", tags.split("|"))
+        self.assertFalse(rendered.startswith("101 "))
+        self.assertIn("101", rendered)
+        self.assertNotEqual(rendered.split().index("101"), 0)
 
 
 if __name__ == "__main__":

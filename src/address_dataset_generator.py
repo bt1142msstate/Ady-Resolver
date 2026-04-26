@@ -513,6 +513,7 @@ class RenderStyle:
     include_commas: bool = True
     unit_first: bool = False
     house_after_street_name: bool = False
+    component_order: Tuple[str, ...] = ()
     slash_unit: bool = False
     extra_spaces: bool = False
 
@@ -2399,17 +2400,34 @@ def render_address(record: AddressRecord, style: Optional[RenderStyle] = None) -
         locality_bits.append(record.zip_code)
     locality_part = " ".join(bit for bit in locality_bits if bit)
 
-    if style.unit_first and unit_part:
-        pieces.extend([unit_part, street_part])
+    if style.component_order:
+        component_values = {
+            "house": record.house_number,
+            "predir": predir,
+            "street_name": record.street_name,
+            "street_type": street_type,
+            "suffixdir": suffixdir,
+            "unit": unit_part,
+            "city": record.city,
+            "state": record.state,
+            "zip": record.zip_code if style.include_zip else "",
+        }
+        ordered_parts = [component_values[key] for key in style.component_order if component_values.get(key)]
+        included = set(style.component_order)
+        ordered_parts.extend(value for key, value in component_values.items() if key not in included and value)
+        address = " ".join(ordered_parts)
     else:
-        pieces.append(street_part)
-        if unit_part:
-            pieces.append(unit_part)
+        if style.unit_first and unit_part:
+            pieces.extend([unit_part, street_part])
+        else:
+            pieces.append(street_part)
+            if unit_part:
+                pieces.append(unit_part)
 
-    if style.include_commas:
-        address = f"{', '.join(pieces)}, {locality_part}"
-    else:
-        address = f"{' '.join(pieces)} {locality_part}"
+        if style.include_commas:
+            address = f"{', '.join(pieces)}, {locality_part}"
+        else:
+            address = f"{' '.join(pieces)} {locality_part}"
 
     if style.extra_spaces:
         address = address.replace(",", " , ")
@@ -2766,6 +2784,42 @@ def op_reordered_locality_typo(record: AddressRecord, style: RenderStyle, rng: r
     return "|".join(tags)
 
 
+def op_scrambled_component_order(record: AddressRecord, style: RenderStyle, rng: random.Random) -> Optional[str]:
+    if not record.house_number or not record.street_name or not record.city or not record.state:
+        return None
+    tags: List[str] = []
+    for op in (op_typo_street_type, op_heavy_city_typo_with_state, op_common_state_typo):
+        tag = op(record, style, rng)
+        if tag:
+            tags.append(tag)
+    if rng.random() < 0.45:
+        tag = op_extra_or_missing_street_letter(record, style, rng)
+        if tag:
+            tags.append(tag)
+    if rng.random() < 0.30:
+        tag = op_house_drop_digit(record, style, rng)
+        if tag:
+            tags.append(tag)
+
+    style.component_order = rng.choice(
+        (
+            ("city", "state", "street_name", "street_type", "house", "zip"),
+            ("state", "house", "city", "street_name", "street_type", "zip"),
+            ("street_type", "street_name", "house", "city", "state", "zip"),
+            ("street_name", "city", "house", "street_type", "state", "zip"),
+            ("city", "street_name", "street_type", "house", "state", "zip"),
+            ("street_name", "street_type", "city", "house", "state", "zip"),
+        )
+    )
+    style.include_zip = rng.random() < 0.35
+    style.include_commas = False
+    if rng.random() < 0.60:
+        style.lowercase = True
+        style.uppercase = False
+    tags.append("component_order_shuffle")
+    return "|".join(tags)
+
+
 def op_ocr_street(record: AddressRecord, style: RenderStyle, rng: random.Random) -> Optional[str]:
     tokens = record.street_name.split()
     candidates = [idx for idx, token in enumerate(tokens) if len(token) >= 4]
@@ -2905,6 +2959,7 @@ MEDIUM_OPS: Sequence[Operation] = EASY_OPS + (
 HARD_OPS: Sequence[Operation] = MEDIUM_OPS + (
     op_compound_local_typo,
     op_reordered_locality_typo,
+    op_scrambled_component_order,
     op_house_near_miss,
     op_house_drop_digit,
     op_house_digit_error,
@@ -2970,6 +3025,7 @@ class Corruptor:
                     op_heavy_city_typo_no_state,
                     op_heavy_city_typo_with_state,
                     op_reordered_locality_typo,
+                    op_scrambled_component_order,
                     op_phonetic_street,
                     op_typo_street_type,
                     op_extra_or_missing_street_letter,
