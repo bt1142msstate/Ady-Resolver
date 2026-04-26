@@ -76,6 +76,16 @@ class ResolverRegressionTests(unittest.TestCase):
         resolution = self.resolver.resolve_stage1(parsed, review_threshold=0.8)
         self.assertEqual("TARGET", resolution.predicted_match_id)
 
+    def test_heavy_city_and_ambiguous_type_typo_resolves(self) -> None:
+        parsed = self.resolver.parse("101 candece se Netooailn MS")
+        self.assertEqual("101 CANDECE ST, NEWTON MS", parsed.standardized_address)
+        resolution = self.resolver.resolve_stage1(parsed, review_threshold=0.8)
+        self.assertEqual("TARGET", resolution.predicted_match_id)
+
+    def test_exact_city_keeps_southeast_suffix_direction(self) -> None:
+        parsed = self.resolver.parse("101 candace se newton ms")
+        self.assertEqual("101 CANDACE SE, NEWTON MS", parsed.standardized_address)
+
     def test_street_typo_without_locality_stays_unresolved(self) -> None:
         parsed = self.resolver.parse("101 candoose st")
         resolution = self.resolver.resolve_stage1(parsed, review_threshold=0.8)

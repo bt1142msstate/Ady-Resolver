@@ -475,7 +475,7 @@ STREET_TYPE_KEYBOARD_TYPOS: Dict[str, Sequence[str]] = {
     "DR": ("FR", "SR", "DE"),
     "LN": ("KN", "LM", "LB"),
     "RD": ("RF", "RS", "ED"),
-    "ST": ("SR", "SY", "DT"),
+    "ST": ("SR", "SY", "DT", "SE"),
     "TER": ("TRR", "TWR", "TED"),
     "TRL": ("TRK", "TRP", "TRLN"),
 }
@@ -2569,6 +2569,20 @@ def op_heavy_city_typo_no_state(record: AddressRecord, style: RenderStyle, rng: 
     return "heavy_city_typo_no_state"
 
 
+def op_heavy_city_typo_with_state(record: AddressRecord, style: RenderStyle, rng: random.Random) -> Optional[str]:
+    if len(record.city.replace(" ", "")) < 5 or not record.state:
+        return None
+    original = record.city
+    for _ in range(rng.choice([2, 2, 3])):
+        op_typo_city(record, style, rng)
+    if record.city == original:
+        return None
+    if rng.random() < 0.70:
+        record.zip_code = ""
+    style.include_commas = False
+    return "heavy_city_typo_with_state"
+
+
 def op_phonetic_city(record: AddressRecord, style: RenderStyle, rng: random.Random) -> Optional[str]:
     if len(record.city.replace(" ", "")) < 4:
         return None
@@ -2810,6 +2824,7 @@ MEDIUM_OPS: Sequence[Operation] = EASY_OPS + (
     op_extra_or_missing_street_letter,
     op_typo_city,
     op_heavy_city_typo_no_state,
+    op_heavy_city_typo_with_state,
     op_phonetic_city,
     op_ocr_street,
     op_ocr_locality,
@@ -2835,6 +2850,7 @@ HARD_OPS: Sequence[Operation] = MEDIUM_OPS + (
 LOCALITY_OPS: Sequence[Operation] = (
     op_typo_city,
     op_phonetic_city,
+    op_heavy_city_typo_with_state,
     op_ocr_locality,
     op_wrong_city,
     op_typo_state,
@@ -2887,6 +2903,7 @@ class Corruptor:
             if profile_probability and self.rng.random() < profile_probability:
                 profile_ops = [
                     op_heavy_city_typo_no_state,
+                    op_heavy_city_typo_with_state,
                     op_phonetic_street,
                     op_typo_street_type,
                     op_extra_or_missing_street_letter,

@@ -14,6 +14,7 @@ from address_dataset_generator import (  # noqa: E402
     RenderStyle,
     canonical_address,
     op_compound_local_typo,
+    op_heavy_city_typo_with_state,
     render_address,
 )
 
@@ -95,6 +96,29 @@ class GeneratorNoiseTests(unittest.TestCase):
         self.assertEqual(1, len(results))
         self.assertEqual("Candoose", results[0].street_name)
         self.assertEqual("near_neighbor_same_house_city", builder.adversarial_reasons[results[0].address_id])
+
+    def test_heavy_city_typo_with_state_keeps_state_and_drops_zip(self) -> None:
+        record = AddressRecord(
+            address_id="REF_TEST",
+            house_number="101",
+            predir="",
+            street_name="Candace",
+            street_type="ST",
+            suffixdir="",
+            unit_type="",
+            unit_value="",
+            city="Newton",
+            state="MS",
+            zip_code="39345",
+        )
+        style = RenderStyle()
+
+        tag = op_heavy_city_typo_with_state(record, style, random.Random(4))
+
+        self.assertEqual("heavy_city_typo_with_state", tag)
+        self.assertNotEqual("Newton", record.city)
+        self.assertEqual("MS", record.state)
+        self.assertFalse(style.include_commas)
 
 
 if __name__ == "__main__":

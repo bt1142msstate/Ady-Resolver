@@ -36,7 +36,7 @@ an input address is standardized, scored, and matched.
 - Browser app for typing an address and seeing the standardized query,
   selected match, confidence, stage, and top candidates. The app can collect
   correct/wrong/correction feedback, apply exact-input feedback overrides, and
-  start active-learning retraining.
+  queue active-learning retraining in the background.
 
 ## Quick Start
 
@@ -317,13 +317,16 @@ Correction rows become positive training examples when the corrected canonical
 address exists in the training reference set. Wrong rows become hard no-match
 training examples.
 
-The browser app also has an Update Training button. It runs the same
-`fit-predict` flow locally using `datasets/fresh_60k_active_v2/train_dataset`,
+The browser app queues that same `fit-predict` flow automatically after every
+Correct, Wrong, or Save Correction feedback click. It uses
+`datasets/fresh_60k_active_v2/train_dataset`,
 `datasets/fresh_60k_active_v2/eval_dataset`, and
 `datasets/source_cache/active_learning/resolver_feedback.csv`; successful runs
-replace the current model JSON and reload it in the running app. Start the app
-with `--train-dataset-dir` and `--eval-dataset-dir` if you want the button to use
-another generated dataset.
+replace the current model JSON and reload it in the running app. If feedback
+arrives while training is already running, one follow-up run is queued so the
+latest feedback is not dropped. Start the app with `--train-dataset-dir` and
+`--eval-dataset-dir` if you want auto-training to use another generated dataset.
+The Train Now button is still available for manual retraining.
 
 To explicitly check whether Stage 2 is helping, run prediction with variant
 comparison enabled:
@@ -386,9 +389,10 @@ type an address to see the standardized query, accepted match, confidence,
 stage, and top candidates. Use the Add Verified Address form for confirmed
 missing addresses; duplicates are detected and will not be added twice. Use the
 feedback controls under each resolver result to capture real user misses for the
-next active-learning training run. A Correct or Save Correction click also adds
-an exact-input override, so resolving the same typo again can return a trusted
-`feedback_override` match immediately instead of waiting for model retraining.
+next active-learning training run. Feedback now queues background retraining
+automatically. A Correct or Save Correction click also adds an exact-input
+override, so resolving the same typo again can return a trusted
+`feedback_override` match immediately while the model update runs.
 
 ## Tests
 

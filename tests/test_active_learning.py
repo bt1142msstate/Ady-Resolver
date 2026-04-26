@@ -1,5 +1,6 @@
 import csv
 import sys
+import threading
 import tempfile
 import unittest
 from pathlib import Path
@@ -18,6 +19,7 @@ from address_resolver import (  # noqa: E402
 )
 from resolver_app import (  # noqa: E402
     FEEDBACK_FIELDNAMES,
+    ResolverService,
     append_active_learning_feedback,
     feedback_override_keys,
     load_feedback_overrides,
@@ -131,6 +133,35 @@ class ActiveLearningTests(unittest.TestCase):
 
         for key in feedback_override_keys("101 candoowse sr newtooon MS", "101 CANDOOWSE ST, NEWTON MS"):
             self.assertEqual("REF_TARGET", overrides[key])
+
+    def test_queue_training_coalesces_when_training_is_running(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            train_dir = root / "train"
+            eval_dir = root / "eval"
+            for dataset_dir in (train_dir, eval_dir):
+                dataset_dir.mkdir()
+                (dataset_dir / "reference_addresses.csv").write_text("address_id\n", encoding="utf-8")
+                (dataset_dir / "queries.csv").write_text("query_id\n", encoding="utf-8")
+
+            service = ResolverService.__new__(ResolverService)
+            service.training_lock = threading.RLock()
+            service.training_job = {
+                "state": "running",
+                "message": "Training started",
+                "queued": False,
+                "queued_at": "",
+                "queue_reason": "",
+                "log_tail": [],
+            }
+            service.train_dataset_dir = train_dir
+            service.eval_dataset_dir = eval_dir
+            service.feedback_row_count = lambda: 1
+
+            status = service.queue_training("feedback:wrong")
+
+        self.assertTrue(status["queued"])
+        self.assertEqual("feedback:wrong", status["queue_reason"])
 
 
 if __name__ == "__main__":

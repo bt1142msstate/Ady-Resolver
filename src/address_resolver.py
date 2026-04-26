@@ -56,6 +56,9 @@ STREET_TYPE_TYPO_ALIASES = {
     "AC": "AVE",
     "SV": "AVE",
 }
+CONTEXTUAL_STREET_TYPE_TYPO_ALIASES = {
+    "SE": "ST",
+}
 PUNCT_RE = re.compile(r"[.,]")
 SPACE_RE = re.compile(r"\s+")
 TOKEN_RE = re.compile(r"[A-Z0-9#]+")
@@ -670,6 +673,13 @@ def canonical_street_type_token(token: str, allow_typos: bool = True) -> str:
     return ""
 
 
+def contextual_street_type_token(token: str) -> str:
+    normalized = re.sub(r"[^A-Z0-9]+", "", normalize_text(token))
+    if not normalized:
+        return ""
+    return canonical_street_type_token(normalized) or CONTEXTUAL_STREET_TYPE_TYPO_ALIASES.get(normalized, "")
+
+
 def extract_state(tokens: List[str], city_lookup: Optional[Dict[Tuple[str, ...], str]] = None) -> str:
     if not tokens:
         return ""
@@ -927,15 +937,31 @@ class Resolver:
 
         max_width = min(3, len(street_tokens) - 1)
         for width in range(max_width, 0, -1):
-            candidate = " ".join(street_tokens[-width:])
+            candidate_tokens = street_tokens[-width:]
+            if width > 1:
+                leading_tokens = candidate_tokens[:-1]
+                if any(
+                    token in STREET_TYPE_TYPO_ALIASES
+                    or (canonical_street_type_token(token, allow_typos=False) and token != "ST")
+                    for token in leading_tokens
+                ):
+                    continue
+            candidate = " ".join(candidate_tokens)
+            street_context = bool(parsed.house_number and parsed.state and len(street_tokens) - width >= 1)
             if allow_global_city_match:
                 minimum_score = 0.86 if width == 1 else 0.82
+            elif street_context:
+                minimum_score = 0.62 if width == 1 else 0.60
             else:
                 minimum_score = 0.80 if width == 1 else 0.76
             city_match, best_score, second_score = closest_choice(candidate, city_choices, minimum_score=minimum_score)
-            required_margin = 0.08 if allow_global_city_match else 0.04
+            required_margin = 0.08 if allow_global_city_match else 0.05 if street_context else 0.04
             if not city_match or (best_score - second_score < required_margin and best_score < 0.90):
                 continue
+            if street_context and best_score < 0.74:
+                city_count = self.city_counts_by_state[parsed.state][city_match]
+                if len(city_choices) > 20 and city_count < 20:
+                    continue
 
             remaining_tokens = street_tokens[:-width]
             predir = parsed.predir
@@ -947,6 +973,12 @@ class Resolver:
                 if maybe_predir in DIRECTION_TO_FULL:
                     predir = maybe_predir
                     remaining_tokens = remaining_tokens[1:]
+
+            if remaining_tokens and not street_type:
+                maybe_street_type = contextual_street_type_token(remaining_tokens[-1])
+                if maybe_street_type:
+                    street_type = maybe_street_type
+                    remaining_tokens = remaining_tokens[:-1]
 
             if remaining_tokens and not suffixdir:
                 maybe_suffixdir = canonical_abbrev(remaining_tokens[-1], DIRECTION_TO_FULL, FULL_TO_DIRECTION)
@@ -1886,6 +1918,18 @@ def is_correct(query: QueryAddress, resolution: Resolution) -> bool:
     return resolution.predicted_match_id == ""
 
 
+def choose_combined_resolution(stage1: Resolution, stage2: Resolution) -> Resolution:
+    if not stage1.predicted_match_id:
+        return stage2
+    if not stage2.predicted_match_id:
+        return stage1
+    if stage1.predicted_match_id == stage2.predicted_match_id and stage2.confidence > stage1.confidence:
+        return stage2
+    if stage1.needs_review and not stage2.needs_review and stage2.confidence >= stage1.confidence:
+        return stage2
+    return stage1
+
+
 def evaluate_variant(name: str, queries: Sequence[QueryAddress], resolutions: Dict[str, Resolution]) -> Dict[str, object]:
     correct = sum(1 for query in queries if is_correct(query, resolutions[query.query_id]))
     accepted = sum(1 for query in queries if not resolutions[query.query_id].needs_review)
@@ -2064,7 +2108,7 @@ def resolve_single_query_worker(query: QueryAddress) -> Tuple[str, Resolution, O
         stage2 = None
     else:
         stage2 = _WORKER_MODEL.resolve(parsed, accept_threshold=_WORKER_ACCEPT_THRESHOLD, review_threshold=_WORKER_REVIEW_THRESHOLD)
-        combined = stage1 if stage1.predicted_match_id else stage2
+        combined = choose_combined_resolution(stage1, stage2)
     return query.query_id, stage1, stage2, combined
 
 
@@ -2116,7 +2160,7 @@ def resolve_queries(
             stage2 = None
         else:
             stage2 = stage2_model.resolve(parsed, accept_threshold=accept_threshold, review_threshold=review_threshold)
-            combined = stage1 if stage1.predicted_match_id else stage2
+            combined = choose_combined_resolution(stage1, stage2)
 
         stage1_resolutions[query.query_id] = stage1
         if stage2_resolutions is not None and stage2 is not None:

@@ -30,6 +30,7 @@ from address_resolver import (
     Resolver,
     Stage2Model,
     build_city_lookup,
+    choose_combined_resolution,
     load_model,
     load_reference,
     normalize_text,
@@ -560,7 +561,7 @@ HTML = """<!doctype html>
         </div>
         <h2>Training</h2>
         <div class="train-form">
-          <button class="primary" id="update-training">Update Training</button>
+          <button class="primary" id="update-training">Train Now</button>
           <div class="train-status" id="train-status"></div>
         </div>
       </aside>
@@ -695,7 +696,16 @@ HTML = """<!doctype html>
         if (!response.ok) {
           throw new Error(payload.error || "Feedback save failed.");
         }
-        renderFeedbackStatus(payload.correct_reference_id ? `Saved ${payload.correct_reference_id}` : "Saved", "ok");
+        const training = payload.training || {};
+        const trainingNote = training.auto_training_error
+          ? `; training not queued: ${training.auto_training_error}`
+          : training.state === "running"
+            ? training.queued
+              ? "; retraining queued"
+              : "; retraining started"
+            : "";
+        renderFeedbackStatus((payload.correct_reference_id ? `Saved ${payload.correct_reference_id}` : "Saved") + trainingNote, "ok");
+        await loadTrainingStatus();
         if (payload.correct_canonical_address) {
           address.value = payload.correct_canonical_address;
           await loadHealth();
@@ -770,7 +780,7 @@ HTML = """<!doctype html>
         return "Idle";
       }
       if (data.state === "running") {
-        return `Training${data.started_at ? ` since ${data.started_at}` : ""}`;
+        return `Training${data.started_at ? ` since ${data.started_at}` : ""}${data.queued ? "; another run queued" : ""}`;
       }
       if (data.state === "succeeded") {
         const accuracy = data.evaluation?.variants?.combined?.accuracy;
@@ -784,7 +794,7 @@ HTML = """<!doctype html>
       const data = await response.json();
       const running = data.state === "running";
       updateTrainingButton.disabled = running;
-      updateTrainingButton.textContent = running ? "Training" : "Update Training";
+      updateTrainingButton.textContent = running ? "Training" : "Train Now";
       renderTrainStatus(trainingStatusText(data), data.state === "failed" ? "bad" : data.state === "succeeded" ? "ok" : "");
       if (running && !trainingPoll) {
         trainingPoll = window.setInterval(loadTrainingStatus, 5000);
@@ -816,7 +826,7 @@ HTML = """<!doctype html>
         await loadTrainingStatus();
       } catch (error) {
         updateTrainingButton.disabled = false;
-        updateTrainingButton.textContent = "Update Training";
+        updateTrainingButton.textContent = "Train Now";
         renderTrainStatus(error.message || "Training start failed.", "bad");
       }
     }
@@ -1076,6 +1086,9 @@ class ResolverService:
         self.training_job: Dict[str, object] = {
             "state": "idle",
             "message": "",
+            "queued": False,
+            "queued_at": "",
+            "queue_reason": "",
             "log_tail": [],
         }
         reference_rows, _ = load_reference(dataset_dir / "reference_addresses.csv")
@@ -1105,7 +1118,7 @@ class ResolverService:
             review_threshold = self.review_threshold
         stage1 = self.resolver.resolve_stage1(parsed, review_threshold=review_threshold)
         stage2 = model.resolve(parsed, accept_threshold=accept_threshold, review_threshold=review_threshold)
-        combined = stage1 if stage1.predicted_match_id else stage2
+        combined = choose_combined_resolution(stage1, stage2)
         top_candidates = self.top_candidate_payload(combined)
         return {
             "input_address": raw_address,
@@ -1385,12 +1398,14 @@ class ResolverService:
         if override_reference_id in self.resolver.reference_by_id:
             for key in feedback_override_keys(raw_address, str(resolution["standardized_address"])):
                 self.feedback_overrides[key] = override_reference_id
+        training_status = self.queue_training(f"feedback:{feedback_type}")
         return {
             "saved": True,
             "feedback_path": str(active_learning_feedback_csv_path()),
             "correct_reference_id": correct_reference_id,
             "correct_canonical_address": correct_canonical_address,
             "override_applied": bool(override_reference_id),
+            "training": training_status,
             "reference_count": self.reference_count,
         }
 
@@ -1420,7 +1435,7 @@ class ResolverService:
         status["training_dataset_ready"] = self.training_dataset_ready()
         return status
 
-    def start_training(self) -> Dict[str, object]:
+    def start_training(self, trigger: str = "manual", reason: str = "manual") -> Dict[str, object]:
         if not self.training_dataset_ready():
             raise ValueError(
                 "Training datasets are missing. Generate datasets/fresh_60k_active_v2 first, "
@@ -1458,6 +1473,11 @@ class ResolverService:
             self.training_job = {
                 "state": "running",
                 "message": "Training started",
+                "trigger": trigger,
+                "reason": reason,
+                "queued": False,
+                "queued_at": "",
+                "queue_reason": "",
                 "started_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 "finished_at": "",
                 "command": command,
@@ -1475,6 +1495,32 @@ class ResolverService:
             )
             thread.start()
             return self.training_status()
+
+    def queue_training(self, reason: str) -> Dict[str, object]:
+        try:
+            if not self.training_dataset_ready():
+                status = self.training_status()
+                status["auto_training_error"] = (
+                    "Training datasets are missing. Generate datasets/fresh_60k_active_v2 first, "
+                    "or start the app with --train-dataset-dir and --eval-dataset-dir."
+                )
+                return status
+            if self.feedback_row_count() <= 0:
+                status = self.training_status()
+                status["auto_training_error"] = "No feedback rows found yet."
+                return status
+            with self.training_lock:
+                if self.training_job.get("state") == "running":
+                    self.training_job["queued"] = True
+                    self.training_job["queued_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+                    self.training_job["queue_reason"] = reason
+                    self.training_job["message"] = "Training running; another run is queued."
+                    return self.training_status()
+            return self.start_training(trigger="feedback", reason=reason)
+        except ValueError as exc:
+            status = self.training_status()
+            status["auto_training_error"] = str(exc)
+            return status
 
     def append_training_log_line(self, line: str) -> None:
         with self.training_lock:
@@ -1533,12 +1579,20 @@ class ResolverService:
         finally:
             if temp_model_path.exists() and state != "succeeded":
                 temp_model_path.unlink()
+            queued_reason = ""
             with self.training_lock:
+                if self.training_job.get("queued"):
+                    queued_reason = str(self.training_job.get("queue_reason") or "queued_feedback")
                 self.training_job["state"] = state
                 self.training_job["message"] = message
                 self.training_job["finished_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
                 self.training_job["returncode"] = returncode
                 self.training_job["evaluation"] = evaluation
+                self.training_job["queued"] = False
+                self.training_job["queued_at"] = ""
+                self.training_job["queue_reason"] = ""
+            if queued_reason:
+                self.queue_training(queued_reason)
 
 
 def reference_csv_path(dataset_dir: Path) -> Path:
@@ -1864,10 +1918,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--real-address-format", default="auto", choices=["auto", "maris", "maris_parcels", "nad", "openaddresses", "address_record", "generic"], help="Input schema for custom --real-address-input values.")
     parser.add_argument("--rebuild-reference-cache", action="store_true", help="Rebuild the app reference cache from --real-address-input before starting.")
     parser.add_argument("--model-path", type=Path, default=DEFAULT_MODEL_PATH, help="Saved Stage 2 model JSON.")
-    parser.add_argument("--train-dataset-dir", type=Path, default=DEFAULT_TRAIN_DATASET_DIR, help="Dataset directory used by the app Update Training button.")
-    parser.add_argument("--eval-dataset-dir", type=Path, default=DEFAULT_EVAL_DATASET_DIR, help="Evaluation dataset directory used by the app Update Training button.")
-    parser.add_argument("--training-output-dir", type=Path, default=DEFAULT_TRAINING_OUTPUT_DIR, help="Run output directory used by the app Update Training button.")
-    parser.add_argument("--training-jobs", type=int, default=4, help="Worker count used by the app Update Training button.")
+    parser.add_argument("--train-dataset-dir", type=Path, default=DEFAULT_TRAIN_DATASET_DIR, help="Dataset directory used by automatic app retraining.")
+    parser.add_argument("--eval-dataset-dir", type=Path, default=DEFAULT_EVAL_DATASET_DIR, help="Evaluation dataset directory used by automatic app retraining.")
+    parser.add_argument("--training-output-dir", type=Path, default=DEFAULT_TRAINING_OUTPUT_DIR, help="Run output directory used by automatic app retraining.")
+    parser.add_argument("--training-jobs", type=int, default=4, help="Worker count used by automatic app retraining.")
     return parser.parse_args()
 
 
