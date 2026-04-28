@@ -7,8 +7,9 @@ Source loading, noise generation, and dataset assembly live in focused modules.
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import address_source_loading as _source_loading
 from address_dataset_build import *  # noqa: F401,F403 - preserve public imports from address_dataset_generator
@@ -82,6 +83,23 @@ def parse_args() -> argparse.Namespace:
         choices=["auto", "maris", "maris_parcels", "nad", "openaddresses", "address_record", "generic"],
         default="auto",
         help="Input schema for --real-address-input. Use generic for a bring-your-own CSV with full_address/address plus city/state/zip columns.",
+    )
+    parser.add_argument(
+        "--source-manifest",
+        type=Path,
+        action="append",
+        default=[],
+        help="JSON manifest listing real address source paths/cache dirs and source formats. May be repeated.",
+    )
+    parser.add_argument(
+        "--audit-sources",
+        action="store_true",
+        help="Audit configured real address sources and exit without generating a dataset.",
+    )
+    parser.add_argument(
+        "--source-audit-output",
+        type=Path,
+        help="Optional JSON output path for --audit-sources.",
     )
     parser.add_argument(
         "--real-address-state",
@@ -202,6 +220,9 @@ def main() -> None:
     args.maris_parcel_cache_dir = args.maris_parcel_cache_dir.expanduser().resolve()
     args.nad_cache_path = args.nad_cache_path.expanduser().resolve()
     args.real_address_input = [path.expanduser().resolve() for path in args.real_address_input]
+    args.source_manifest = [path.expanduser().resolve() for path in args.source_manifest]
+    if args.source_audit_output:
+        args.source_audit_output = args.source_audit_output.expanduser().resolve()
     if args.reference_size <= 0:
         raise SystemExit("--reference-size must be positive")
     if args.noisy_per_reference <= 0:
@@ -220,35 +241,42 @@ def main() -> None:
 
     real_address_pool: Optional[List[AddressRecord]] = None
     real_address_metadata: Optional[Dict[str, object]] = None
+    source_specs: List[SourceSpec] = []
+    for manifest_path in args.source_manifest:
+        source_specs.extend(source_specs_from_manifest(manifest_path))
     if args.download_openaddresses_ms:
-        downloaded = download_openaddresses_ms(args.real_address_cache_dir)
-        args.real_address_input.extend(downloaded)
+        download_openaddresses_ms(args.real_address_cache_dir)
+        source_specs.append(SourceSpec("openaddresses_processed", args.real_address_cache_dir, "openaddresses"))
     if args.download_openaddresses_ms_direct:
-        downloaded = download_openaddresses_ms_direct(
+        download_openaddresses_ms_direct(
             args.openaddresses_ms_direct_cache_dir,
             args.openaddresses_ms_source_cache_dir,
             refresh=args.refresh_openaddresses_ms_direct_cache,
             refresh_configs=args.refresh_openaddresses_ms_source_cache,
             include_statewide=args.include_openaddresses_ms_statewide_direct,
         )
-        args.real_address_input.extend(downloaded)
+        source_specs.append(SourceSpec("openaddresses_direct", args.openaddresses_ms_direct_cache_dir, "openaddresses"))
     if args.download_maris_point_addresses:
-        downloaded = download_maris_point_addresses(args.maris_cache_dir)
-        args.real_address_input.extend(downloaded)
+        download_maris_point_addresses(args.maris_cache_dir)
+        source_specs.append(SourceSpec("maris_point_addresses", args.maris_cache_dir, "maris"))
     if args.download_maris_parcels:
-        downloaded = download_maris_parcels(
+        download_maris_parcels(
             args.maris_parcel_cache_dir,
             layer_limit=args.maris_parcel_layer_limit,
             refresh=args.refresh_maris_parcel_cache,
         )
-        args.real_address_input.extend(downloaded)
+        source_specs.append(SourceSpec("maris_parcels", args.maris_parcel_cache_dir, "maris_parcels"))
     if args.download_nad:
         nad_path = download_file(NAD_TEXT_ZIP_URL, args.nad_cache_path, timeout=300)
-        args.real_address_input.append(nad_path)
+        source_specs.append(SourceSpec("nad", nad_path, "nad"))
+    for index, input_path in enumerate(args.real_address_input, 1):
+        source_specs.append(SourceSpec(f"real_address_input_{index}", input_path, args.real_address_format))
+    if args.audit_sources and not source_specs:
+        source_specs = default_public_source_specs()
 
     real_input_files: List[Path] = []
-    if args.real_address_input:
-        real_input_files = discover_input_files(args.real_address_input)
+    if source_specs:
+        real_input_files = discover_input_files([spec.path for spec in source_specs if spec.path.exists()])
 
     county_coverage: Optional[Dict[str, object]] = None
     if real_input_files:
@@ -266,10 +294,17 @@ def main() -> None:
                 + ", ".join(missing_counties)
             )
 
-    if real_input_files:
-        load_result = load_real_addresses(
-            real_input_files,
-            source_format=args.real_address_format,
+    if args.audit_sources:
+        audit = audit_source_specs(source_specs, state_filter=args.real_address_state)
+        if args.source_audit_output:
+            write_source_audit(audit, args.source_audit_output)
+            print(f"Wrote source audit to: {args.source_audit_output}")
+        print(json.dumps(audit["summary"], indent=2, sort_keys=True))
+        return
+
+    if source_specs:
+        load_result = load_real_addresses_from_source_specs(
+            source_specs,
             state_filter=args.real_address_state,
             limit=args.real_address_limit,
         )
@@ -282,8 +317,28 @@ def main() -> None:
             "state": load_result.state,
             "rows_seen": load_result.rows_seen,
             "rows_loaded": load_result.rows_loaded,
+            "rows_loaded_after_cross_source_deduplication": load_result.rows_loaded_after_cross_source_deduplication,
             "rows_skipped": load_result.rows_skipped,
+            "skip_reasons": load_result.skip_reasons,
+            "duplicate_across_sources": load_result.duplicate_across_sources,
             "mississippi_county_coverage": county_coverage,
+            "sources": [
+                {
+                    "name": spec.name,
+                    "path": str(spec.path),
+                    "source_format": result.source_format,
+                    "configured_source_format": spec.source_format,
+                    "rows_seen": result.rows_seen,
+                    "rows_loaded": result.rows_loaded,
+                    "rows_skipped": result.rows_skipped,
+                    "skip_reasons": result.skip_reasons,
+                    "duplicate_rows": result.duplicate_rows,
+                    "input_paths": result.input_paths,
+                    "source_status": source_status_summary_for_path(spec.path),
+                    "notes": spec.notes,
+                }
+                for spec, result in zip(load_result.source_specs, load_result.source_results)
+            ],
             "source_note": (
                 "For Mississippi-wide production use, provide the full MS811/MARIS county shapefile ZIP set and enable "
                 "--require-ms-county-coverage. Public MARIS parcels are a broad parcel situs-address fallback, not true "
@@ -292,7 +347,7 @@ def main() -> None:
             ),
         }
         print(
-            f"Loaded {load_result.rows_loaded:,} real {load_result.state} addresses "
+            f"Loaded {len(load_result.records):,} unique real {load_result.state} addresses "
             f"from {len(load_result.input_paths)} file(s); skipped {load_result.rows_skipped:,} rows."
         )
 

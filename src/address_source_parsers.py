@@ -48,7 +48,14 @@ def openaddresses_row_to_record(row: Dict[str, str], address_id: str, state_filt
     if not house_number or not street_name or not state:
         return None
     if not city and not zip_code:
-        return None
+        locality_status = clean_real_token(dict_get(row, "LOCALITY_STATUS"))
+        county = clean_real_value(dict_get(row, "COUNTY", "COVERAGE_COUNTY"))
+        if (
+            locality_status != clean_real_token(OPENADDRESSES_COUNTY_ONLY_LOCALITY_STATUS)
+            or state != "MS"
+            or not county
+        ):
+            return None
 
     return AddressRecord(
         address_id=address_id,
@@ -376,6 +383,11 @@ def real_row_to_record(row: Dict[str, str], source_format: str, address_id: str,
         return None
     if record:
         record.source_quality = source_quality_for_format(source_format)
+        if (
+            source_format == "openaddresses"
+            and clean_real_token(dict_get(row, "LOCALITY_STATUS")) == clean_real_token(OPENADDRESSES_COUNTY_ONLY_LOCALITY_STATUS)
+        ):
+            record.source_quality = OPENADDRESSES_COUNTY_ONLY_SOURCE_QUALITY
         record = apply_known_address_corrections(record)
         record.street_name = strip_duplicate_terminal_street_type(record.street_name, record.street_type)
         street_line = " ".join(part for part in [record.street_name, record.street_type] if part)
@@ -384,6 +396,117 @@ def real_row_to_record(row: Dict[str, str], source_format: str, address_id: str,
         if not record.house_number or not record.street_name or not record.state:
             return None
     return record
+
+
+def likely_row_zip_code(row: Dict[str, str], source_format: str) -> str:
+    if source_format == "nad":
+        return clean_zip_code(dict_get(row, "Zip_Code"))
+    if source_format == "maris_parcels":
+        return clean_zip_code(dict_get(row, "SZIP", "SITUSZIP", "SITE_ZIP", "ZIP", "ZIP_CODE"))
+    if source_format == "maris":
+        return clean_zip_code(dict_get(row, "ZCTA5CE10", "ZIP", "ZIP_CODE", "ZIPCODE", "Zipcode", "POSTCODE", "L_ZIP", "R_ZIP"))
+    return clean_zip_code(dict_get(row, "POSTCODE", "ZIP", "ZIP_CODE", *GENERIC_ZIP_FIELDS))
+
+
+def likely_row_state(row: Dict[str, str], source_format: str, state_filter: str) -> str:
+    if source_format == "nad":
+        return canonical_state(dict_get(row, "State"))
+    if source_format == "maris_parcels":
+        return canonical_state(dict_get(row, "SSTATE", "STATE")) or state_filter
+    if source_format in {"address_record", "generic"}:
+        return canonical_state(dict_get(row, *GENERIC_STATE_FIELDS)) or state_filter
+    return canonical_state(dict_get(row, "REGION", "STATE", "SSTATE")) or state_filter
+
+
+def likely_row_has_locality(row: Dict[str, str], source_format: str) -> bool:
+    if source_format == "nad":
+        city = dict_get_place_name(row, "Post_City", "Inc_Muni", "Census_Plc", "Uninc_Comm")
+    elif source_format == "maris_parcels":
+        city = dict_get_place_name(row, "SCITY", "SITUSCITY", "SITE_CITY", "CITY")
+    elif source_format == "maris":
+        city = dict_get_place_name(
+            row,
+            "COMMUNITY",
+            "CITY",
+            "City",
+            "POST_COMM",
+            "Post_Comm",
+            "PostComm",
+            "POST_CITY",
+            "MUNI",
+            "L_COMMUNIT",
+            "R_COMMUNIT",
+            "Uninc_Comm",
+            "UnincComm",
+            "MSAGComm",
+        )
+    else:
+        city = dict_get_place_name(row, "CITY", "DISTRICT", "LOCALITY", *GENERIC_CITY_FIELDS)
+    return bool(city or likely_row_zip_code(row, source_format))
+
+
+def infer_real_row_reject_reason(row: Dict[str, str], source_format: str, state_filter: str) -> str:
+    state = likely_row_state(row, source_format, state_filter)
+    if state_filter and state and state != state_filter:
+        return "state_mismatch"
+
+    zip_code = likely_row_zip_code(row, source_format)
+    if zip_code and state and not zip_code_matches_state(zip_code, state):
+        return "non_ms_zip"
+
+    if not likely_row_has_locality(row, source_format):
+        locality_status = clean_real_token(dict_get(row, "LOCALITY_STATUS"))
+        if locality_status != clean_real_token(OPENADDRESSES_COUNTY_ONLY_LOCALITY_STATUS):
+            return "missing_locality"
+
+    joined_values = " ".join(clean_real_value(value) for value in row.values())
+    house_candidates = (
+        "NUMBER",
+        "ADDR_NUM",
+        "ADDRESS_NU",
+        "ADDRNUM",
+        "STNUM",
+        "ST_NUMBER",
+        "AddNo_Full",
+        "Add_Number",
+        "STREET_NUM",
+        "PHYNUM",
+        "ADDNUM",
+        "SITUSADDR",
+        "SITEADD",
+        "ADDRESS",
+        "Address",
+    )
+    if not any(clean_house_number(dict_get(row, candidate)) for candidate in house_candidates):
+        full_number, _full_street = split_house_number_from_street(joined_values)
+        if not full_number:
+            return "missing_or_invalid_house_number"
+
+    street_candidates = (
+        "STREET",
+        "ROAD_NAME",
+        "ROAD_NAME_",
+        "NAME",
+        "STREET_NAM",
+        "ST_NAME",
+        "Street",
+        "FULLNAME",
+        "FullName",
+        "StNam_Full",
+        "SITEADD",
+        "ADDR",
+        "ADDRESS",
+        "Address",
+    )
+    likely_street = clean_real_value(" ".join(dict_get(row, candidate) for candidate in street_candidates))
+    if source_format == "maris_parcels":
+        _house_number, likely_street = split_house_number_from_street(dict_get(row, "SITEADD", "SITUSADDR", "SITUS_ADD", "SITE_ADDR", "PROPERTY_ADDRESS"))
+    if likely_street and is_parcel_location_descriptor(likely_street):
+        return "parcel_location_descriptor"
+    if not likely_street:
+        return "missing_street"
+
+    return "unparseable"
 
 
 def dbf_records_from_stream(raw: io.BufferedIOBase, encoding: str = "latin1") -> Iterator[Dict[str, str]]:
@@ -453,6 +576,8 @@ def load_real_addresses(
     seen_keys: set[str] = set()
     rows_seen = 0
     rows_skipped = 0
+    duplicate_rows = 0
+    skip_reasons: Counter[str] = Counter()
     detected_formats: Counter[str] = Counter()
 
     for file_path in files:
@@ -466,10 +591,13 @@ def load_real_addresses(
                 record = real_row_to_record(row, dbf_detected_format, f"REAL_{rows_seen:09d}", state_filter)
                 if record is None:
                     rows_skipped += 1
+                    skip_reasons[infer_real_row_reject_reason(row, dbf_detected_format, state_filter)] += 1
                     continue
                 key = query_text_key(_canonical_address_for_dedupe(record))
                 if key in seen_keys:
                     rows_skipped += 1
+                    duplicate_rows += 1
+                    skip_reasons["duplicate_canonical"] += 1
                     continue
                 seen_keys.add(key)
                 records.append(record)
@@ -482,6 +610,8 @@ def load_real_addresses(
                         rows_seen=rows_seen,
                         rows_loaded=len(records),
                         rows_skipped=rows_skipped,
+                        skip_reasons=dict(sorted(skip_reasons.items())),
+                        duplicate_rows=duplicate_rows,
                     )
 
         for stream_name, stream in iter_text_streams(file_path):
@@ -496,10 +626,13 @@ def load_real_addresses(
                     record = real_row_to_record(row, detected_format, f"REAL_{rows_seen:09d}", state_filter)
                     if record is None:
                         rows_skipped += 1
+                        skip_reasons[infer_real_row_reject_reason(row, detected_format, state_filter)] += 1
                         continue
                     key = query_text_key(_canonical_address_for_dedupe(record))
                     if key in seen_keys:
                         rows_skipped += 1
+                        duplicate_rows += 1
+                        skip_reasons["duplicate_canonical"] += 1
                         continue
                     seen_keys.add(key)
                     records.append(record)
@@ -512,6 +645,8 @@ def load_real_addresses(
                             rows_seen=rows_seen,
                             rows_loaded=len(records),
                             rows_skipped=rows_skipped,
+                            skip_reasons=dict(sorted(skip_reasons.items())),
+                            duplicate_rows=duplicate_rows,
                         )
             except csv.Error as exc:
                 raise ValueError(f"Could not parse real address rows from {stream_name}: {exc}") from exc
@@ -524,4 +659,6 @@ def load_real_addresses(
         rows_seen=rows_seen,
         rows_loaded=len(records),
         rows_skipped=rows_skipped,
+        skip_reasons=dict(sorted(skip_reasons.items())),
+        duplicate_rows=duplicate_rows,
     )

@@ -11,7 +11,7 @@ import urllib.parse
 import urllib.request
 import zipfile
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -119,7 +119,20 @@ OPENADDRESSES_RESULTS_URL = "https://results.openaddresses.io/index.html"
 OPENADDRESSES_MS_ZIP_RE = re.compile(r'https://data\.openaddresses\.io/runs/\d+/us/ms/[^"]+\.zip')
 OPENADDRESSES_MS_SOURCES_API_URL = "https://api.github.com/repos/openaddresses/openaddresses/contents/sources/us/ms?ref=master"
 OPENADDRESSES_DIRECT_MANIFEST_FILENAME = "_openaddresses_ms_direct_manifest.json"
-OPENADDRESSES_DIRECT_FIELDNAMES = ("NUMBER", "STREET", "UNIT", "CITY", "REGION", "POSTCODE", "SOURCE", "SOURCE_ID")
+OPENADDRESSES_COUNTY_ONLY_LOCALITY_STATUS = "county_only_situs"
+OPENADDRESSES_COUNTY_ONLY_SOURCE_QUALITY = 0.72
+OPENADDRESSES_DIRECT_FIELDNAMES = (
+    "NUMBER",
+    "STREET",
+    "UNIT",
+    "CITY",
+    "REGION",
+    "POSTCODE",
+    "SOURCE",
+    "SOURCE_ID",
+    "COUNTY",
+    "LOCALITY_STATUS",
+)
 OPENADDRESSES_DIRECT_SKIP_SOURCE_NAMES = {
     # These are older statewide parcel layers. The app already uses the newer
     # MARIS April 2024 parcel service directly, so including these by default
@@ -485,6 +498,8 @@ class RealAddressLoadResult:
     rows_seen: int
     rows_loaded: int
     rows_skipped: int
+    skip_reasons: Dict[str, int] = field(default_factory=dict)
+    duplicate_rows: int = 0
 
 
 

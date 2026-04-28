@@ -91,6 +91,8 @@ Then open `http://127.0.0.1:8765`.
   training for custom address CSVs.
 - `DATA_SOURCES.md` - concise source and coverage guidance for supported public,
   authoritative, licensed, and manual address data paths.
+- `sources/` - JSON source manifests for rebuilding from local public caches or
+  adapting the pipeline to your own address exports.
 - `models/` - small checked-in Stage 2 model JSON artifacts.
 - `examples/` - a small demo reference set and custom-address CSV example for
   fresh clones.
@@ -132,6 +134,11 @@ coverage guide.
 - OpenAddresses Mississippi extracts: supported as supplemental/development
   data. The current easy processed extracts are not exhaustive and many rows
   lack city/ZIP locality fields.
+- OpenAddresses direct source catalog: supported as a cached normalizer for
+  current OpenAddresses Mississippi source definitions. ArcGIS services are
+  retried with smaller batches when large requests fail; HTTP shapefile ZIP
+  sources are parsed through the DBF reader; county-only situs rows are allowed
+  only when the source coverage proves Mississippi county/state context.
 - Manual verified Mississippi supplement: optional local CSV for individually
   verified public addresses that are missing from the bulk public feeds.
 - USDOT National Address Database (NAD): supported parser/download path, but
@@ -156,6 +163,37 @@ Practical source strategy:
   feedback controls. Feedback is written to
   `datasets/source_cache/active_learning/resolver_feedback.csv`; corrections
   also add the verified address to the manual supplement.
+
+Audit the current public source caches before rebuilding:
+
+```bash
+python3 src/address_dataset_generator.py \
+  --audit-sources \
+  --source-audit-output datasets/source_cache/source_audit.json
+```
+
+The audit reports rows seen, rows loaded, skip reasons, duplicates, county
+coverage, city/ZIP counts, per-source net-new records, and OpenAddresses direct
+status counts. With the current local cache, the audit exposes the exact
+OpenAddresses direct gaps instead of hiding them behind a single skipped-row
+count.
+
+Build from the checked-in public-source manifest:
+
+```bash
+python3 src/address_dataset_generator.py \
+  --source-manifest sources/ms_public_sources.json \
+  --paired-output-dir datasets/ms_public_manifest \
+  --paired-shared-reference
+```
+
+The app can use the same manifest when rebuilding its reference cache:
+
+```bash
+python3 src/resolver_app.py \
+  --source-manifest sources/ms_public_sources.json \
+  --rebuild-reference-cache
+```
 
 Generate from locally supplied MS811/MARIS county shapefile ZIPs with all-82
 county enforcement:
@@ -280,9 +318,11 @@ Important coverage note: no open public web download tested here proves every
 current Mississippi address is present. The generator's
 `--require-ms-county-coverage` check intentionally fails unless the input file
 names cover all 82 Mississippi counties, so use it with the full MS811/MARIS
-county ZIP directory.
+county ZIP directory. For mixed public/private source stacks, prefer a source
+manifest. See `sources/ms_public_sources.json` for the public baseline and
+`examples/custom_sources_manifest.json` for a bring-your-own template.
 
-Source comparison from the April 25, 2026 smoke tests:
+Source comparison from the April 27, 2026 smoke tests:
 
 - Public MARIS Point Addressing downloads: 25 ZIPs, 25 inferred counties,
   522,958 strict usable Mississippi address records after parsing the DBFs as
@@ -292,12 +332,13 @@ Source comparison from the April 25, 2026 smoke tests:
 - OpenAddresses processed Mississippi downloads: 23 ZIPs, 166,615 strict usable
   Mississippi address records after rejecting rows with ZIPs outside the
   Mississippi postal prefix range, and 14 inferred counties.
-- OpenAddresses current Mississippi source catalog direct ESRI cache: 25 CSVs,
-  478,023 rows seen, 413,532 strict usable Mississippi address records, and
-  73,853 new canonical source addresses after de-duplicating against the older
-  MARIS/OpenAddresses/manual source stack. Parcel-only source definitions whose
-  city/ZIP columns are owner mailing fields are skipped unless they expose a
-  real situs locality through OpenAddresses conform.
+- OpenAddresses current Mississippi source catalog direct cache: 34 CSVs,
+  628,692 rows seen, 587,031 usable Mississippi address records, and 156,520
+  new canonical source addresses after de-duplicating against the older
+  MARIS/OpenAddresses/manual source stack. ArcGIS services are retried with
+  smaller batches, one HTTP shapefile ZIP source is parsed through DBF
+  attributes, and county-only situs rows are kept at lower source quality only
+  when OpenAddresses coverage confirms Mississippi county/state context.
 - Public MARIS parcel service: 81 parcel layers covering all 82 county names,
   with 1,970,713 non-empty `SITEADD` records before parser filtering and
   de-duplication. Use as a public fallback, not as a replacement for point
@@ -309,7 +350,7 @@ Source comparison from the April 25, 2026 smoke tests:
   markers, `N OF ...` descriptors, `DOD` note rows, and duplicated terminal
   street types. In the current development cache, filtering, de-duplication,
   conservative ZIP-to-city consensus variants, and manual verified additions
-  produce 1,752,180 live resolver reference rows. ZIP-to-city variants require
+  produce 1,843,344 live resolver reference rows. ZIP-to-city variants require
   at least 25 real records in a ZIP and a 98% dominant postal-community share.
 - Full MS811/MARIS county ZIP input is the only configured path that is allowed
   to pass the all-82-county guard as true point-address input.

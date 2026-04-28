@@ -17,6 +17,7 @@ from address_dataset_generator import (  # noqa: F401
     load_real_addresses,
     mississippi_counties_in_paths,
     query_text_key,
+    source_specs_from_manifest,
     zip_code_matches_state,
 )
 from address_resolver import (  # noqa: F401
@@ -43,8 +44,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--host", default="127.0.0.1", help="Host interface to bind.")
     parser.add_argument("--port", type=int, default=8765, help="Port to bind.")
     parser.add_argument("--dataset-dir", type=Path, default=DEFAULT_DATASET_DIR, help="Dataset directory with reference_addresses.csv.")
-    parser.add_argument("--real-address-input", type=Path, action="append", help="Real address cache used to build the app reference cache. May be repeated. Defaults to cached MARIS parcels plus cached MARIS point addresses when available.")
+    parser.add_argument("--real-address-input", type=Path, action="append", help="Real address cache used to build the app reference cache. May be repeated. Defaults to cached public MARIS/OpenAddresses/manual sources when available.")
     parser.add_argument("--real-address-format", default="auto", choices=["auto", "maris", "maris_parcels", "nad", "openaddresses", "address_record", "generic"], help="Input schema for custom --real-address-input values.")
+    parser.add_argument("--source-manifest", type=Path, action="append", default=[], help="JSON manifest listing real address source paths/cache dirs and source formats. May be repeated.")
     parser.add_argument("--rebuild-reference-cache", action="store_true", help="Rebuild the app reference cache from --real-address-input before starting.")
     parser.add_argument("--model-path", type=Path, default=DEFAULT_MODEL_PATH, help="Saved Stage 2 model JSON.")
     parser.add_argument("--train-dataset-dir", type=Path, default=DEFAULT_TRAIN_DATASET_DIR, help="Dataset directory used by automatic app retraining.")
@@ -57,7 +59,11 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     dataset_dir = args.dataset_dir.expanduser().resolve()
-    if args.real_address_input:
+    if args.source_manifest:
+        source_specs = []
+        for manifest_path in args.source_manifest:
+            source_specs.extend(source_specs_from_manifest(manifest_path.expanduser().resolve()))
+    elif args.real_address_input:
         source_specs = [(path.expanduser().resolve(), args.real_address_format) for path in args.real_address_input]
     else:
         source_specs = [(path.expanduser().resolve(), source_format) for path, source_format in default_source_specs()]

@@ -7,8 +7,10 @@ import address_openaddresses as _openaddresses
 
 from address_maris import *  # noqa: F401,F403
 from address_openaddresses import *  # noqa: F401,F403
+from address_source_audit import *  # noqa: F401,F403
 from address_source_common import *  # noqa: F401,F403
 from address_source_downloads import *  # noqa: F401,F403
+from address_source_manifest import *  # noqa: F401,F403
 from address_source_parsers import *  # noqa: F401,F403
 
 

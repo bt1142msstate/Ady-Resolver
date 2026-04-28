@@ -1,0 +1,19 @@
+{
+  "description": "Example bring-your-own source manifest. Replace paths with your own CSV, ZIP, DBF, or cache directories.",
+  "sources": [
+    {
+      "name": "my_verified_addresses",
+      "path": "custom_addresses.csv",
+      "format": "generic",
+      "enabled": true,
+      "notes": "Generic CSV with a full_address or address column plus optional city/state/zip columns."
+    },
+    {
+      "name": "my_ms811_county_zips",
+      "path": "../datasets/source_cache/ms811",
+      "format": "maris",
+      "enabled": false,
+      "notes": "Enable after placing MS811/MARIS county shapefile ZIPs in this directory."
+    }
+  ]
+}

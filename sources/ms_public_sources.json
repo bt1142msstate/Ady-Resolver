@@ -1,0 +1,40 @@
+{
+  "description": "Best public Mississippi baseline. Paths are local caches and are intentionally not committed.",
+  "sources": [
+    {
+      "name": "maris_parcels",
+      "path": "../datasets/source_cache/maris_parcels",
+      "format": "maris_parcels",
+      "enabled": true,
+      "notes": "Public MARIS statewide parcel situs fallback; broad coverage but lower quality than point addresses."
+    },
+    {
+      "name": "maris_point_addresses",
+      "path": "../datasets/source_cache/maris_point_addresses",
+      "format": "maris",
+      "enabled": true,
+      "notes": "Public MARIS point-address ZIPs; public page exposes only a subset of counties."
+    },
+    {
+      "name": "openaddresses_processed",
+      "path": "../datasets/source_cache/openaddresses_ms",
+      "format": "auto",
+      "enabled": true,
+      "notes": "Processed OpenAddresses Mississippi extracts."
+    },
+    {
+      "name": "openaddresses_direct",
+      "path": "../datasets/source_cache/openaddresses_ms_direct",
+      "format": "openaddresses",
+      "enabled": true,
+      "notes": "Normalized CSVs queried from the current OpenAddresses Mississippi source catalog."
+    },
+    {
+      "name": "manual_verified_ms",
+      "path": "../datasets/source_cache/manual_verified_ms",
+      "format": "address_record",
+      "enabled": true,
+      "notes": "Locally verified missing-address supplement maintained by the app."
+    }
+  ]
+}

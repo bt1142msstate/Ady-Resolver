@@ -4,17 +4,21 @@ from __future__ import annotations
 
 import csv
 import json
+from collections import Counter
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Sequence, Tuple, Union
 
 from address_dataset_generator import (
     AddressRecord,
     MISSISSIPPI_COUNTIES,
+    SourceSpec,
     canonical_address,
+    coerce_source_spec,
     discover_input_files,
     load_real_addresses,
     mississippi_counties_in_paths,
     query_text_key,
+    source_status_summary_for_path,
 )
 from address_resolver import normalize_text
 from resolver_app_config import (
@@ -124,15 +128,17 @@ def add_zip_city_enrichment(
     }
 
 
-def build_reference_cache(dataset_dir: Path, source_specs: List[Tuple[Path, str]]) -> None:
-    if not source_specs:
+def build_reference_cache(dataset_dir: Path, source_specs: Sequence[Union[SourceSpec, Tuple[Path, str]]]) -> None:
+    normalized_specs = [coerce_source_spec(spec) for spec in source_specs]
+    normalized_specs = [spec for spec in normalized_specs if spec.enabled]
+    if not normalized_specs:
         raise SystemExit("At least one real address source is required to build the app reference cache.")
 
     source_files: List[Path] = []
-    for source_dir, _source_format in source_specs:
-        if not source_dir.exists():
-            raise SystemExit(f"Real address source cache not found: {source_dir}")
-        source_files.extend(discover_input_files([source_dir]))
+    for spec in normalized_specs:
+        if not spec.path.exists():
+            raise SystemExit(f"Real address source cache not found: {spec.path}")
+        source_files.extend(discover_input_files([spec.path]))
 
     covered_counties = mississippi_counties_in_paths(source_files)
     missing_counties = sorted(set(MISSISSIPPI_COUNTIES) - set(covered_counties))
@@ -143,18 +149,23 @@ def build_reference_cache(dataset_dir: Path, source_specs: List[Tuple[Path, str]
         )
 
     print("Building full Mississippi app reference cache from:")
-    for source_dir, source_format in source_specs:
-        print(f"  - {source_dir} ({source_format})")
+    for spec in normalized_specs:
+        print(f"  - {spec.path} ({spec.source_format})")
 
     records = []
     seen_keys = set()
     source_results = []
-    for source_dir, source_format in source_specs:
-        load_result = load_real_addresses([source_dir], source_format=source_format, state_filter="MS")
+    duplicate_across_sources = 0
+    skip_reasons: Counter[str] = Counter()
+    for spec in normalized_specs:
+        load_result = load_real_addresses([spec.path], source_format=spec.source_format, state_filter="MS")
         source_results.append(load_result)
+        skip_reasons.update(load_result.skip_reasons)
         for record in load_result.records:
             key = query_text_key(canonical_address(record))
             if key in seen_keys:
+                duplicate_across_sources += 1
+                skip_reasons["duplicate_across_sources"] += 1
                 continue
             seen_keys.add(key)
             records.append(record)
@@ -198,21 +209,30 @@ def build_reference_cache(dataset_dir: Path, source_specs: List[Tuple[Path, str]
         "rows_seen": sum(result.rows_seen for result in source_results),
         "rows_loaded": sum(result.rows_loaded for result in source_results),
         "rows_skipped": sum(result.rows_skipped for result in source_results),
+        "skip_reasons": dict(sorted(skip_reasons.items())),
         "reference_records": len(records),
         "deduplicated_records": sum(result.rows_loaded for result in source_results) - source_unique_count,
+        "duplicate_across_sources": duplicate_across_sources,
         "source_records_after_deduplication": source_unique_count,
         "derived_records_added": int(zip_city_enrichment["records_added"]),
         "zip_city_enrichment": zip_city_enrichment,
         "sources": [
             {
+                "name": spec.name,
+                "path": str(spec.path),
                 "source_format": result.source_format,
+                "configured_source_format": spec.source_format,
                 "state": result.state,
                 "rows_seen": result.rows_seen,
                 "rows_loaded": result.rows_loaded,
                 "rows_skipped": result.rows_skipped,
+                "skip_reasons": result.skip_reasons,
+                "duplicate_rows": result.duplicate_rows,
+                "source_status": source_status_summary_for_path(spec.path),
+                "notes": spec.notes,
                 "input_paths": result.input_paths,
             }
-            for result in source_results
+            for spec, result in zip(normalized_specs, source_results)
         ],
         "input_paths": [path for result in source_results for path in result.input_paths],
         "mississippi_county_coverage": {
