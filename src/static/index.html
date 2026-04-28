@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Ady Resolver</title>
+  <link rel="stylesheet" href="/static/app.css" />
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <div>
+        <h1>Ady Resolver</h1>
+        <p class="subhead">Current Mississippi reference dataset.</p>
+      </div>
+      <div class="status" id="status">
+        <span>Dataset</span><strong>loading</strong>
+        <span>References</span><strong>loading</strong>
+      </div>
+    </header>
+
+    <main>
+      <section class="panel workspace">
+        <label for="address">Address</label>
+        <textarea id="address" spellcheck="false" autocomplete="off" placeholder="563 Davis Crossing Rd MS 39046"></textarea>
+        <div class="controls">
+          <button class="primary" id="resolve">Resolve</button>
+          <button id="clear">Clear</button>
+        </div>
+        <div class="result" id="result">
+          <div class="empty">No address resolved.</div>
+        </div>
+      </section>
+
+      <aside class="panel side">
+        <h2>Try A Current Reference</h2>
+        <div class="examples" id="examples"></div>
+        <h2>Add Verified Address</h2>
+        <div class="add-form">
+          <div>
+            <label for="add-address">Address</label>
+            <textarea id="add-address" spellcheck="false" autocomplete="off" placeholder="102 Candace St Newton MS 39345"></textarea>
+          </div>
+          <div>
+            <label for="source-note">Source Note</label>
+            <input id="source-note" autocomplete="off" placeholder="public listing, county site, USPS lookup" />
+          </div>
+          <button class="primary" id="add-verified">Add</button>
+          <div class="add-import">
+            <div>
+              <label for="add-verified-file">CSV or Excel File</label>
+              <input id="add-verified-file" name="file" type="file" accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
+            </div>
+            <div>
+              <label for="add-verified-column">Address Column</label>
+              <select id="add-verified-column" name="address_column" disabled>
+                <option value="">Choose a file first</option>
+              </select>
+            </div>
+            <button class="primary" id="import-verified">Import Verified</button>
+          </div>
+          <div class="add-status" id="add-status"></div>
+        </div>
+        <h2>Training</h2>
+        <div class="train-form">
+          <button class="primary" id="update-training">Train Now</button>
+          <div class="training-progress" aria-label="Training progress">
+            <div class="training-progress-bar" id="training-progress-bar"></div>
+          </div>
+          <div class="train-status" id="train-status"></div>
+        </div>
+        <h2>Batch Resolve</h2>
+        <form class="batch-form" id="batch-form">
+          <div>
+            <label for="batch-file">CSV or Excel File</label>
+            <input id="batch-file" name="file" type="file" accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
+          </div>
+          <div>
+            <label for="batch-address-column">Address Column</label>
+            <select id="batch-address-column" name="address_column" disabled>
+              <option value="">Choose a file first</option>
+            </select>
+          </div>
+          <div>
+            <label for="batch-id-column">ID Column</label>
+            <select id="batch-id-column" name="id_column" disabled>
+              <option value="">No ID column</option>
+            </select>
+          </div>
+          <button class="primary" id="batch-submit" type="submit">Resolve File</button>
+          <div class="batch-status" id="batch-status"></div>
+        </form>
+      </aside>
+    </main>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

@@ -7,9 +7,9 @@ import sys
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler
 from typing import Dict, Optional
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
-from resolver_app_ui import HTML
+from resolver_app_ui import HTML, STATIC_DIR
 from resolver_batch_io import inspect_batch_columns
 from resolver_service import ResolverService
 
@@ -23,6 +23,9 @@ class ResolverRequestHandler(BaseHTTPRequestHandler):
         route = urlparse(self.path).path
         if route == "/":
             self.send_html(HTML)
+            return
+        if route.startswith("/static/"):
+            self.send_static_asset(route)
             return
         if route == "/api/health":
             self.send_json(self.service.health())
@@ -273,6 +276,34 @@ class ResolverRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(encoded)))
         self.end_headers()
         self.wfile.write(encoded)
+
+    def send_static_asset(self, route: str) -> None:
+        relative_path = unquote(route.removeprefix("/static/")).lstrip("/")
+        if not relative_path or "\x00" in relative_path:
+            self.send_json({"error": "Not found"}, status=HTTPStatus.NOT_FOUND)
+            return
+        static_root = STATIC_DIR.resolve()
+        asset_path = (STATIC_DIR / relative_path).resolve()
+        try:
+            asset_path.relative_to(static_root)
+        except ValueError:
+            self.send_json({"error": "Not found"}, status=HTTPStatus.NOT_FOUND)
+            return
+        if not asset_path.is_file():
+            self.send_json({"error": "Not found"}, status=HTTPStatus.NOT_FOUND)
+            return
+        content_types = {
+            ".css": "text/css; charset=utf-8",
+            ".js": "application/javascript; charset=utf-8",
+            ".html": "text/html; charset=utf-8",
+        }
+        payload = asset_path.read_bytes()
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", content_types.get(asset_path.suffix.lower(), "application/octet-stream"))
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        self.wfile.write(payload)
 
     def send_bytes(
         self,
