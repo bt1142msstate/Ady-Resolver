@@ -60,9 +60,23 @@ STREET_TYPE_TYPO_ALIASES = {
     "AVNE": "AVE",
     "AVNEU": "AVE",
     "CIRCDE": "CIR",
+    "BLD": "BLVD",
+    "BLV": "BLVD",
+    "BVLD": "BLVD",
 }
 CONTEXTUAL_STREET_TYPE_TYPO_ALIASES = {
     "SE": "ST",
+}
+UNIT_TYPE_TYPO_ALIASES = {
+    "APPT": "APT",
+    "APRT": "APT",
+    "APART": "APT",
+    "SUIT": "STE",
+    "SUTE": "STE",
+    "UNIIT": "UNIT",
+    "UNITE": "UNIT",
+    "UNT": "UNIT",
+    "UNUT": "UNIT",
 }
 PUNCT_RE = re.compile(r"[.,]")
 SPACE_RE = re.compile(r"\s+")
@@ -269,6 +283,28 @@ def canonical_street_type_token(token: str, allow_typos: bool = True) -> str:
     return ""
 
 
+def canonical_unit_type_token(token: str, allow_typos: bool = True) -> str:
+    normalized = re.sub(r"[^A-Z0-9]+", "", normalize_text(token).lstrip("#"))
+    if not normalized:
+        return ""
+    canonical = canonical_abbrev(normalized, UNIT_TYPE_TO_FULL, FULL_TO_UNIT_TYPE)
+    if canonical in UNIT_TYPE_TO_FULL:
+        return canonical
+    if allow_typos:
+        typo_match = UNIT_TYPE_TYPO_ALIASES.get(normalized, "")
+        if typo_match:
+            return typo_match
+        if len(normalized) >= 4:
+            full_match, best_score, second_score = closest_choice(
+                normalized,
+                tuple(FULL_TO_UNIT_TYPE),
+                minimum_score=0.80,
+            )
+            if full_match and best_score - second_score >= 0.04:
+                return FULL_TO_UNIT_TYPE[full_match]
+    return ""
+
+
 def looks_like_street_descriptor(token: str) -> bool:
     return bool(
         canonical_abbrev(token, DIRECTION_TO_FULL, FULL_TO_DIRECTION) in DIRECTION_TO_FULL
@@ -281,6 +317,8 @@ def extract_zip_code(tokens: List[str]) -> str:
     for idx in range(len(tokens) - 1, -1, -1):
         token = tokens[idx]
         if re.fullmatch(r"\d{5}", token):
+            if not (38600 <= int(token) <= 39799):
+                continue
             other_house_number = any(
                 other_idx != idx and looks_like_house_number_token(other_token)
                 for other_idx, other_token in enumerate(tokens)
@@ -318,14 +356,18 @@ def looks_like_house_number_token(token: str) -> bool:
 
 def extract_house_number(tokens: List[str]) -> str:
     if tokens and looks_like_house_number_token(tokens[0]):
-        return tokens.pop(0)
+        first = tokens[0]
+        first_has_alpha = any(char.isalpha() for char in first)
+        later_numeric_house = any(token.isdigit() for token in tokens[1:])
+        if not (first_has_alpha and later_numeric_house):
+            return tokens.pop(0)
 
     candidates: List[Tuple[Tuple[int, int, int], int]] = []
     for idx, token in enumerate(tokens):
         if not looks_like_house_number_token(token):
             continue
         previous = tokens[idx - 1]
-        previous_is_unit = canonical_abbrev(previous.lstrip("#"), UNIT_TYPE_TO_FULL, FULL_TO_UNIT_TYPE) in UNIT_TYPE_TO_FULL
+        previous_is_unit = canonical_unit_type_token(previous) in UNIT_TYPE_TO_FULL
         if previous_is_unit:
             continue
         candidates.append((house_number_score(tokens, idx), idx))
@@ -362,7 +404,10 @@ def extract_state(tokens: List[str], city_lookup: Optional[Dict[Tuple[str, ...],
     for width in range(max_width, 0, -1):
         for start in range(len(tokens) - width, -1, -1):
             state = state_from_candidate(tokens[start:start + width])
-            if state:
+            # This resolver is Mississippi-focused. Keep exact/fuzzy Mississippi
+            # handling flexible, but do not let another state's name steal a
+            # middle street token such as TEXAS ST in a Mississippi address.
+            if state and (state == "MS" or start + width == len(tokens)):
                 del tokens[start:start + width]
                 return state
 
@@ -380,8 +425,11 @@ def extract_state(tokens: List[str], city_lookup: Optional[Dict[Tuple[str, ...],
             minimum_score = 0.88 if width == 1 else 0.84
             match, best_score, second_score = closest_choice(candidate, tuple(STATE_NAME_TO_ABBREV), minimum_score=minimum_score)
             if match and best_score - second_score >= 0.08:
+                state = STATE_NAME_TO_ABBREV[match]
+                if state != "MS" and start + width != len(tokens):
+                    continue
                 del tokens[start:start + width]
-                return STATE_NAME_TO_ABBREV[match]
+                return state
     return ""
 
 
@@ -481,8 +529,8 @@ def parse_query_address(raw: str, city_lookup: Dict[Tuple[str, ...], str]) -> Pa
 
     unit_type = ""
     unit_value = ""
-    if len(tokens) >= 2 and canonical_abbrev(tokens[0].lstrip("#"), UNIT_TYPE_TO_FULL, FULL_TO_UNIT_TYPE) in UNIT_TYPE_TO_FULL:
-        unit_type = canonical_abbrev(tokens.pop(0).lstrip("#"), UNIT_TYPE_TO_FULL, FULL_TO_UNIT_TYPE)
+    if len(tokens) >= 2 and canonical_unit_type_token(tokens[0]) in UNIT_TYPE_TO_FULL:
+        unit_type = canonical_unit_type_token(tokens.pop(0))
         unit_value = tokens.pop(0)
 
     house_number = extract_house_number(tokens)
@@ -490,11 +538,11 @@ def parse_query_address(raw: str, city_lookup: Dict[Tuple[str, ...], str]) -> Pa
     if len(tokens) >= 2:
         unit_pos = None
         for idx in range(len(tokens) - 1):
-            alias = canonical_abbrev(tokens[idx].lstrip("#"), UNIT_TYPE_TO_FULL, FULL_TO_UNIT_TYPE)
+            alias = canonical_unit_type_token(tokens[idx])
             if alias in UNIT_TYPE_TO_FULL:
                 unit_pos = idx
         if unit_pos is not None:
-            unit_type = canonical_abbrev(tokens[unit_pos].lstrip("#"), UNIT_TYPE_TO_FULL, FULL_TO_UNIT_TYPE)
+            unit_type = canonical_unit_type_token(tokens[unit_pos])
             unit_value = tokens[unit_pos + 1]
             del tokens[unit_pos:unit_pos + 2]
 

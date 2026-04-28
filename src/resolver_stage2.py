@@ -152,8 +152,9 @@ class Stage2Model:
             for candidate_id in candidate_ids:
                 features = self.resolver.candidate_features_for_variants(variants, candidate_id)
                 features_by_id[candidate_id] = features
+                probability = self.predict_probability(features)
                 scored.append(
-                    CandidateScore(reference_id=candidate_id, score=self.predict_probability(features))
+                    CandidateScore(reference_id=candidate_id, score=self.rank_probability(features, probability))
                 )
             scored.sort(key=lambda item: item.score, reverse=True)
             cached = (tuple(scored), features_by_id)
@@ -175,6 +176,37 @@ class Stage2Model:
             return features_by_id[candidate_id]
         return self.resolver.candidate_features_for_variants(variants, candidate_id)
 
+    def rank_probability(self, features: CandidateFeatures, probability: float) -> float:
+        values = features.values
+        if not features.variant.street_name:
+            return probability
+
+        street_text_evidence = max(values[2], values[3])
+        street_evidence = max(street_text_evidence, 0.90 * values[23])
+        locality_evidence = max(values[4], values[6], values[7], values[14], values[15])
+        adjusted = probability
+
+        if locality_evidence >= 0.86 and street_evidence >= 0.66 and street_text_evidence >= 0.58:
+            adjusted = max(
+                adjusted,
+                min(
+                    0.93,
+                    0.42 * street_evidence
+                    + 0.18 * values[4]
+                    + 0.08 * values[14]
+                    + 0.08 * values[25]
+                    + 0.08 * values[27]
+                    + 0.12 * values[5]
+                    + 0.04 * values[8],
+                ),
+            )
+        elif locality_evidence >= 0.86 and street_text_evidence < 0.58:
+            adjusted = min(
+                adjusted,
+                0.20 + 0.30 * street_text_evidence + 0.08 * locality_evidence + 0.12 * values[5],
+            )
+        return max(0.0, min(1.0, adjusted))
+
     def resolve(self, parsed: ParsedAddress, accept_threshold: float, review_threshold: float) -> Resolution:
         ranked = self.rank_candidates(parsed)
         if not ranked:
@@ -192,9 +224,11 @@ class Stage2Model:
         margin = best.score - ranked[1].score if len(ranked) > 1 else best.score
         best_features = self.best_features(parsed, best.reference_id)
         decision_score = self.decision_score(best_features, best.score, margin)
+        decision_score = self.guard_decision_score(best_features, decision_score)
+        exact_full_match = self.is_exact_full_match(best_features)
         standardized_query = best_features.variant.standardized_address
 
-        if decision_score >= accept_threshold and len(ranked) > 1 and margin < self.ambiguous_margin_threshold:
+        if decision_score >= accept_threshold and len(ranked) > 1 and margin < self.ambiguous_margin_threshold and not exact_full_match:
             return Resolution(
                 predicted_match_id="",
                 predicted_canonical_address="",
@@ -226,6 +260,33 @@ class Stage2Model:
             stage="stage2_no_match",
             top_candidates=ranked,
         )
+
+    def is_exact_full_match(self, features: CandidateFeatures) -> bool:
+        values = features.values
+        return bool(
+            values[16]
+            and values[17]
+            and (values[15] or values[6])
+            and values[25] >= 0.5
+        )
+
+    def guard_decision_score(self, features: CandidateFeatures, decision_score: float) -> float:
+        values = features.values
+        if (
+            features.variant.house_number
+            and values[5] < 0.45
+            and max(values[2], 0.90 * values[23], values[3]) >= 0.66
+            and max(values[4], values[6], values[7], values[14], values[15]) >= 0.86
+        ):
+            return min(decision_score, 0.39)
+        if (
+            features.variant.street_name
+            and values[16]
+            and max(values[2], values[3]) < 0.55
+            and max(values[4], values[6], values[7], values[14], values[15]) >= 0.86
+        ):
+            return min(decision_score, 0.39)
+        return decision_score
 
     def decision_score(self, features: CandidateFeatures, best_score: float, margin: float) -> float:
         if self.accept_tree:

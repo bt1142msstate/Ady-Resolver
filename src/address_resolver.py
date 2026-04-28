@@ -43,6 +43,10 @@ class Resolver:
         self.by_house_city_state = defaultdict(list)
         self.by_city_street = defaultdict(list)
         self.by_city_street_name = defaultdict(list)
+        self.by_city_street_token = defaultdict(set)
+        self.by_city_street_phonetic = defaultdict(set)
+        self.by_zip_prefix_street_token = defaultdict(set)
+        self.by_zip_prefix_street_phonetic = defaultdict(set)
         self.by_zip = defaultdict(list)
         self.by_city_state = defaultdict(list)
         self.by_state = defaultdict(list)
@@ -89,6 +93,12 @@ class Resolver:
         for token in TOKEN_RE.findall(row.street_name):
             if len(token) >= 3:
                 self.street_token_index[token].add(row.address_id)
+                self.by_city_street_token[(row.city, row.state, token)].add(row.address_id)
+                self.by_zip_prefix_street_token[(row.zip_code[:3], token)].add(row.address_id)
+                phonetic = soundex_token(token)
+                if phonetic:
+                    self.by_city_street_phonetic[(row.city, row.state, phonetic)].add(row.address_id)
+                    self.by_zip_prefix_street_phonetic[(row.zip_code[:3], phonetic)].add(row.address_id)
         for token in TOKEN_RE.findall(row.city):
             if len(token) >= 3:
                 self.city_token_index[token].add(row.address_id)
@@ -107,6 +117,9 @@ class Resolver:
         cached = self._parse_cache.get(raw)
         if cached is None:
             cached = parse_query_address(raw, self.city_lookup)
+            cached = self.apply_city_only_street_token(cached)
+            cached = self.apply_rare_city_typo_correction(cached)
+            cached = self.apply_split_city_suffix_correction(cached)
             cached = self.apply_fuzzy_city_anywhere(cached)
             cached = self.apply_fuzzy_city_suffix(cached)
             cached = self.apply_contextual_city_reassignment(cached)
@@ -164,6 +177,45 @@ class Resolver:
         second_score = min(score - 0.10, sequence_similarity(candidate, scored[1][1])) if len(scored) > 1 else 0.0
         return best_city, score, max(0.0, second_score)
 
+    def city_count(self, city: str, state: str = "") -> int:
+        if state:
+            return self.city_counts_by_state[state][city]
+        return sum(state_counts[city] for state_counts in self.city_counts_by_state.values())
+
+    def closest_city_choice(
+        self,
+        candidate: str,
+        city_choices: Sequence[str],
+        state: str = "",
+        minimum_score: float = 0.0,
+        exclude: str = "",
+    ) -> Tuple[str, float, float]:
+        if not candidate or not city_choices:
+            return "", 0.0, 0.0
+        scored = sorted(
+            (
+                (city, sequence_similarity(candidate, city), self.city_count(city, state))
+                for city in city_choices
+                if city != exclude
+            ),
+            key=lambda item: (item[1], item[2]),
+            reverse=True,
+        )
+        if not scored:
+            return "", 0.0, 0.0
+        top_score = scored[0][1]
+        best_city, best_score, best_count = max(
+            (item for item in scored if top_score - item[1] <= 0.02),
+            key=lambda item: (item[2], item[1], item[0]),
+        )
+        second_score = max((score for city, score, _count in scored if city != best_city), default=0.0)
+        second_count = max((count for city, score, count in scored if city != best_city and score == second_score), default=0)
+        if second_score and best_count >= max(20, second_count * 10):
+            second_score = min(second_score, best_score - 0.08)
+        if best_score < minimum_score:
+            return "", best_score, second_score
+        return best_city, best_score, second_score
+
     def street_tokens_for_reparse(self, parsed: ParsedAddress) -> List[str]:
         tokens: List[str] = []
         if parsed.predir:
@@ -171,10 +223,112 @@ class Resolver:
         if parsed.street_name:
             tokens.extend(parsed.street_name.split())
         if parsed.street_type:
-            tokens.append(parsed.street_type)
+            tokens.append(self.street_type_name_token(parsed.street_type))
         if parsed.suffixdir:
             tokens.append(parsed.suffixdir)
         return tokens
+
+    def street_type_name_token(self, street_type: str) -> str:
+        if street_type == "VW":
+            return "VIEW"
+        return STREET_TYPE_TO_FULL.get(street_type, street_type)
+
+    def apply_city_only_street_token(self, parsed: ParsedAddress) -> ParsedAddress:
+        if (
+            parsed.city
+            or not parsed.house_number
+            or not parsed.street_name
+            or parsed.street_type
+            or parsed.predir
+            or parsed.suffixdir
+        ):
+            return parsed
+
+        candidate = parsed.street_name
+        if len(candidate.split()) > 3:
+            return parsed
+
+        city_choices, allow_global_city_match = self.fuzzy_city_choices(parsed)
+        if not city_choices:
+            return parsed
+
+        minimum_score = 0.80 if allow_global_city_match else 0.78
+        city_match, best_score, second_score = self.prefix_city_choice(candidate, city_choices, parsed.state)
+        if not city_match:
+            city_match, best_score, second_score = self.closest_city_choice(
+                candidate,
+                city_choices,
+                parsed.state,
+                minimum_score=minimum_score,
+            )
+        if not city_match or (best_score - second_score < 0.06 and best_score < 0.84):
+            return parsed
+
+        state = parsed.state
+        if allow_global_city_match and not state:
+            states = {candidate_state for candidate_state in self.states_by_city.get(city_match, ()) if candidate_state}
+            if len(states) == 1:
+                state = next(iter(states))
+
+        return rebuild_parsed(parsed, street_name="", city=city_match, state=state)
+
+    def apply_rare_city_typo_correction(self, parsed: ParsedAddress) -> ParsedAddress:
+        if not parsed.city or not parsed.state or parsed.state not in self.cities_by_state:
+            return parsed
+
+        source_count = self.city_counts_by_state[parsed.state][parsed.city]
+        if source_count > 5:
+            return parsed
+
+        city_choices = tuple(city for city in self.cities_by_state[parsed.state] if city != parsed.city)
+        city_match, best_score, second_score = self.closest_city_choice(
+            parsed.city,
+            city_choices,
+            parsed.state,
+            minimum_score=0.84,
+        )
+        if not city_match:
+            return parsed
+
+        alt_count = self.city_counts_by_state[parsed.state][city_match]
+        count_ratio_ok = alt_count >= max(20, source_count * 10)
+        margin_ok = best_score - second_score >= 0.03 or best_score >= 0.92
+        if not count_ratio_ok or not margin_ok:
+            return parsed
+
+        return rebuild_parsed(parsed, city=city_match)
+
+    def apply_split_city_suffix_correction(self, parsed: ParsedAddress) -> ParsedAddress:
+        if not parsed.city or not parsed.state or not parsed.street_name or parsed.state not in self.cities_by_state:
+            return parsed
+
+        street_tokens = parsed.street_name.split()
+        if len(street_tokens) < 2:
+            return parsed
+
+        trailing_token = street_tokens[-1]
+        if looks_like_street_descriptor(trailing_token):
+            return parsed
+
+        candidate = f"{parsed.city} {trailing_token}"
+        city_choices = tuple(city for city in self.cities_by_state[parsed.state] if city != parsed.city)
+        city_match, best_score, second_score = self.closest_city_choice(
+            candidate,
+            city_choices,
+            parsed.state,
+            minimum_score=0.84,
+        )
+        if not city_match:
+            return parsed
+
+        current_count = self.city_counts_by_state[parsed.state][parsed.city]
+        alt_count = self.city_counts_by_state[parsed.state][city_match]
+        count_ratio_ok = alt_count >= max(20, current_count * 2)
+        margin_ok = best_score - second_score >= 0.03 or best_score >= 0.92
+        if not count_ratio_ok or not margin_ok:
+            return parsed
+
+        return rebuild_parsed(parsed, street_name=" ".join(street_tokens[:-1]), city=city_match)
 
     def city_street_context_score(
         self,
@@ -255,6 +409,15 @@ class Resolver:
                 candidate_tokens = street_tokens[start:start + width]
                 if all(looks_like_street_descriptor(token) for token in candidate_tokens):
                     continue
+                if width > 1:
+                    trailing_tokens = candidate_tokens[1:]
+                    if any(
+                        token in STREET_TYPE_TYPO_ALIASES
+                        or token in CONTEXTUAL_STREET_TYPE_TYPO_ALIASES
+                        or (canonical_street_type_token(token, allow_typos=False) and token != "ST")
+                        for token in trailing_tokens
+                    ):
+                        continue
                 candidate = " ".join(candidate_tokens)
                 if allow_global_city_match:
                     minimum_score = 0.78 if width == 1 else 0.76
@@ -264,7 +427,12 @@ class Resolver:
                     minimum_score = 0.80 if width == 1 else 0.76
                 city_match, best_score, second_score = self.prefix_city_choice(candidate, city_choices, parsed.state)
                 if not city_match:
-                    city_match, best_score, second_score = closest_choice(candidate, city_choices, minimum_score=minimum_score)
+                    city_match, best_score, second_score = self.closest_city_choice(
+                        candidate,
+                        city_choices,
+                        parsed.state,
+                        minimum_score=minimum_score,
+                    )
                 required_margin = 0.08 if allow_global_city_match else 0.05
                 if not city_match or (best_score - second_score < required_margin and best_score < 0.90):
                     continue
@@ -357,14 +525,20 @@ class Resolver:
             candidate = " ".join(candidate_tokens)
             street_context = bool(parsed.house_number and parsed.state and len(street_tokens) - width >= 1)
             if allow_global_city_match:
-                minimum_score = 0.86 if width == 1 else 0.82
+                strong_street_context = bool(parsed.house_number and (parsed.street_type or len(street_tokens) >= 3))
+                minimum_score = 0.80 if strong_street_context and width == 1 else 0.86 if width == 1 else 0.82
             elif street_context:
                 minimum_score = 0.62 if width == 1 else 0.60
             else:
                 minimum_score = 0.80 if width == 1 else 0.76
             city_match, best_score, second_score = self.prefix_city_choice(candidate, city_choices, parsed.state)
             if not city_match:
-                city_match, best_score, second_score = closest_choice(candidate, city_choices, minimum_score=minimum_score)
+                city_match, best_score, second_score = self.closest_city_choice(
+                    candidate,
+                    city_choices,
+                    parsed.state,
+                    minimum_score=minimum_score,
+                )
             required_margin = 0.08 if allow_global_city_match else 0.05 if street_context else 0.04
             if not city_match or (best_score - second_score < required_margin and best_score < 0.90):
                 continue
@@ -457,11 +631,25 @@ class Resolver:
                 candidate_tokens = street_tokens[start:start + width]
                 if all(looks_like_street_descriptor(token) for token in candidate_tokens):
                     continue
+                if width > 1:
+                    trailing_tokens = candidate_tokens[1:]
+                    if any(
+                        token in STREET_TYPE_TYPO_ALIASES
+                        or token in CONTEXTUAL_STREET_TYPE_TYPO_ALIASES
+                        or (canonical_street_type_token(token, allow_typos=False) and token != "ST")
+                        for token in trailing_tokens
+                    ):
+                        continue
                 candidate = " ".join(candidate_tokens)
                 minimum_score = 0.78 if allow_global_city_match else 0.62
                 city_match, best_score, second_score = self.prefix_city_choice(candidate, city_choices, parsed.state)
                 if not city_match:
-                    city_match, best_score, second_score = closest_choice(candidate, city_choices, minimum_score=minimum_score)
+                    city_match, best_score, second_score = self.closest_city_choice(
+                        candidate,
+                        city_choices,
+                        parsed.state,
+                        minimum_score=minimum_score,
+                    )
                 if not city_match or city_match == parsed.city:
                     continue
                 if best_score - second_score < 0.04 and best_score < 0.90:
@@ -535,9 +723,10 @@ class Resolver:
             if not base.city or base.state not in self.cities_by_state:
                 continue
             city_choices = tuple(self.cities_by_state[base.state])
-            city_match, best_score, second_score = closest_choice(
+            city_match, best_score, second_score = self.closest_city_choice(
                 base.city,
                 city_choices,
+                base.state,
                 minimum_score=0.62,
             )
             if city_match and city_match != base.city:
@@ -557,8 +746,14 @@ class Resolver:
                     variants.append(("state_city_fuzzy", corrected))
             alternate_choices = tuple(city for city in city_choices if city != base.city)
             if alternate_choices:
-                alt_match, alt_score, alt_second_score = closest_choice(base.city, alternate_choices, minimum_score=0.86)
                 source_count = self.city_counts_by_state[base.state][base.city]
+                alt_minimum_score = 0.80 if source_count <= 5 else 0.86
+                alt_match, alt_score, alt_second_score = self.closest_city_choice(
+                    base.city,
+                    alternate_choices,
+                    base.state,
+                    minimum_score=alt_minimum_score,
+                )
                 alt_count = self.city_counts_by_state[base.state][alt_match] if alt_match else 0
                 count_ratio_ok = source_count <= 3 and alt_count >= max(20, source_count * 10)
                 margin_ok = alt_score - alt_second_score >= 0.03
@@ -655,10 +850,15 @@ class Resolver:
         return ""
 
     def stage2_variants(self, parsed: ParsedAddress) -> List[Tuple[str, ParsedAddress]]:
-        return [("original", parsed), *self.locality_variants(parsed)]
+        variants: List[Tuple[str, ParsedAddress]] = [("original", parsed), *self.locality_variants(parsed)]
+        variants.extend(self.street_type_as_name_variants(variant) for _reason, variant in list(variants) if self.street_type_as_name_variants(variant))
+        variants.extend(self.embedded_unit_variants(variant) for _reason, variant in list(variants) if self.embedded_unit_variants(variant))
+        return self.unique_parsed_variants(variants)
 
     def stage1_variants(self, parsed: ParsedAddress) -> List[Tuple[str, ParsedAddress]]:
         variants: List[Tuple[str, ParsedAddress]] = [("original", parsed), *self.locality_variants(parsed)]
+        variants.extend(self.street_type_as_name_variants(variant) for _reason, variant in list(variants) if self.street_type_as_name_variants(variant))
+        variants.extend(self.embedded_unit_variants(variant) for _reason, variant in list(variants) if self.embedded_unit_variants(variant))
 
         if parsed.unit_type or parsed.unit_value:
             variants.append(("drop_unit", rebuild_parsed(parsed, unit_type="", unit_value="")))
@@ -671,6 +871,39 @@ class Resolver:
         if parsed.zip_code and len(parsed.zip_code) >= 4:
             variants.append(("zip_prefix", rebuild_parsed(parsed, zip_code=parsed.zip_code[:3])))
 
+        return self.unique_parsed_variants(variants)
+
+    def street_type_as_name_variants(self, parsed: ParsedAddress) -> Tuple[str, ParsedAddress]:
+        if parsed.street_type != "VW" or not parsed.street_name:
+            return ()
+        return (
+            "type_as_name",
+            rebuild_parsed(
+                parsed,
+                street_name=f"{parsed.street_name} {self.street_type_name_token(parsed.street_type)}",
+                street_type="",
+            ),
+        )
+
+    def embedded_unit_variants(self, parsed: ParsedAddress) -> Tuple[str, ParsedAddress]:
+        if not parsed.unit_type or not parsed.unit_value:
+            return ()
+        embedded_bits = [parsed.street_name]
+        if parsed.street_type:
+            embedded_bits.append(parsed.street_type)
+        embedded_bits.extend([parsed.unit_type, parsed.unit_value])
+        return (
+            "unit_as_street",
+            rebuild_parsed(
+                parsed,
+                street_name=" ".join(bit for bit in embedded_bits if bit),
+                street_type="",
+                unit_type="",
+                unit_value="",
+            ),
+        )
+
+    def unique_parsed_variants(self, variants: Sequence[Tuple[str, ParsedAddress]]) -> List[Tuple[str, ParsedAddress]]:
         unique_variants: List[Tuple[str, ParsedAddress]] = []
         seen = set()
         for reason, variant in variants:
@@ -709,6 +942,49 @@ class Resolver:
             + 0.06 * state_exact
         )
 
+    def candidate_generation_score(self, parsed: ParsedAddress, candidate: ReferenceAddress) -> float:
+        score = self.rough_score(parsed, candidate)
+        if not parsed.street_name:
+            return score
+
+        street_text_similarity = max(
+            cheap_similarity(parsed.street_name, candidate.street_name),
+            sequence_similarity(parsed.street_name, candidate.street_name),
+            sequence_similarity(parsed.street_signature, candidate.street_signature),
+            token_overlap(parsed.street_signature, candidate.street_signature),
+        )
+        street_evidence = max(
+            street_text_similarity,
+            0.90 * phonetic_similarity(parsed.street_name, candidate.street_name),
+            0.90 * phonetic_similarity(parsed.street_signature, candidate.street_signature),
+        )
+        city_similarity = cheap_similarity(parsed.city, candidate.city)
+        state_exact = 1.0 if parsed.state and parsed.state == candidate.state else 0.0
+        zip_exact = 1.0 if parsed.zip_code and parsed.zip_code == candidate.zip_code else 0.0
+        zip_prefix = 1.0 if parsed.zip_code[:3] and parsed.zip_code[:3] == candidate.zip_code[:3] else 0.0
+        locality_evidence = max(city_similarity, state_exact, zip_exact, zip_prefix)
+
+        if locality_evidence >= 0.86 and street_evidence >= 0.66 and street_text_similarity >= 0.58:
+            score = max(
+                score,
+                0.34
+                + 0.30 * street_evidence
+                + 0.10 * city_similarity
+                + 0.05 * state_exact
+                + 0.05 * zip_exact
+                + 0.04 * zip_prefix
+                + 0.08 * numeric_similarity(parsed.house_number, candidate.house_number),
+            )
+        elif locality_evidence >= 0.86 and parsed.house_number:
+            score = min(
+                score,
+                0.22
+                + 0.35 * street_text_similarity
+                + 0.08 * locality_evidence
+                + 0.10 * numeric_similarity(parsed.house_number, candidate.house_number),
+            )
+        return score
+
     def add_blocking_candidates(
         self,
         scores: Dict[str, float],
@@ -737,8 +1013,13 @@ class Resolver:
         base_limit = self.default_candidate_limit if limit is None else limit
         candidate_limit = self.adaptive_candidate_limit(variants, base_limit)
         blocking_scores: Dict[str, float] = defaultdict(float)
+        has_street_query = any(variant.street_name for _, variant in variants)
+        if not has_street_query:
+            return []
 
         for _, variant in variants:
+            street_tokens = [token for token in token_set(variant.street_name) if len(token) >= 3]
+
             if variant.house_number and variant.zip_code and variant.street_signature:
                 self.add_blocking_candidates(
                     blocking_scores,
@@ -807,12 +1088,40 @@ class Resolver:
                         7.0,
                         limit=100,
                     )
+                for token in street_tokens:
+                    self.add_blocking_candidates(
+                        blocking_scores,
+                        self.by_city_street_token.get((variant.city, variant.state, token), ()),
+                        10.0,
+                    )
+                    phonetic = soundex_token(token)
+                    if phonetic:
+                        self.add_blocking_candidates(
+                            blocking_scores,
+                            self.by_city_street_phonetic.get((variant.city, variant.state, phonetic), ()),
+                            9.0,
+                        )
             if variant.state:
                 self.add_blocking_candidates(blocking_scores, self.by_state.get(variant.state, []), 1.0, limit=90)
             if variant.house_number:
                 self.add_blocking_candidates(blocking_scores, self.by_house.get(variant.house_number, []), 6.0, limit=60)
 
-            street_tokens = [token for token in token_set(variant.street_name) if len(token) >= 3]
+            if variant.zip_code[:3]:
+                for token in street_tokens:
+                    self.add_blocking_candidates(
+                        blocking_scores,
+                        self.by_zip_prefix_street_token.get((variant.zip_code[:3], token), ()),
+                        6.0,
+                        limit=120,
+                    )
+                    phonetic = soundex_token(token)
+                    if phonetic:
+                        self.add_blocking_candidates(
+                            blocking_scores,
+                            self.by_zip_prefix_street_phonetic.get((variant.zip_code[:3], phonetic), ()),
+                            5.0,
+                            limit=140,
+                        )
             for token in street_tokens:
                 self.add_blocking_candidates(blocking_scores, self.street_token_index.get(token, ()), 1.8, limit=35)
             city_tokens = [token for token in token_set(variant.city) if len(token) >= 3]
@@ -824,12 +1133,14 @@ class Resolver:
         else:
             prioritized = sorted(blocking_scores.items(), key=lambda item: item[1], reverse=True)
             prefilter_limit = max(self.blocking_prefilter_limit, candidate_limit * 3)
+            if has_street_query:
+                prefilter_limit = max(prefilter_limit, candidate_limit * 8, 240)
             blocking_pool = [candidate_id for candidate_id, _ in prioritized[: prefilter_limit]]
 
         scored = []
         for candidate_id in blocking_pool:
             candidate = self.reference_by_id[candidate_id]
-            best = max(self.rough_score(variant, candidate) for _, variant in variants)
+            best = max(self.candidate_generation_score(variant, candidate) for _, variant in variants)
             blocking_bonus = blocking_scores.get(candidate_id, 0.0)
             scored.append((candidate_id, best, blocking_bonus))
         scored.sort(key=lambda item: (item[1], item[2]), reverse=True)
@@ -847,11 +1158,17 @@ class Resolver:
 
         for variant_reason, variant in variants:
             full_similarity = sequence_similarity(variant.standardized_address, candidate.standardized_address)
-            street_name_similarity = sequence_similarity(variant.street_name, candidate.street_name)
+            street_name_similarity = max(
+                sequence_similarity(variant.street_name, candidate.street_name),
+                0.95 * sequence_similarity(variant.street_signature, candidate.street_signature),
+            )
             street_signature_overlap = token_overlap(variant.street_signature, candidate.street_signature)
             city_similarity = sequence_similarity(variant.city, candidate.city)
             house_similarity = numeric_similarity(variant.house_number, candidate.house_number)
-            street_phonetic_similarity = phonetic_similarity(variant.street_name, candidate.street_name)
+            street_phonetic_similarity = max(
+                phonetic_similarity(variant.street_name, candidate.street_name),
+                phonetic_similarity(variant.street_signature, candidate.street_signature),
+            )
             city_phonetic_similarity = phonetic_similarity(variant.city, candidate.city)
             zip_exact = 1.0 if variant.zip_code and variant.zip_code == candidate.zip_code else 0.0
             zip_prefix = 1.0 if variant.zip_code[:3] and variant.zip_code[:3] == candidate.zip_code[:3] else 0.0

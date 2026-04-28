@@ -7,7 +7,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = PROJECT_ROOT / "src"
 sys.path.insert(0, str(SRC_DIR))
 
-from address_resolver import ReferenceAddress, Resolver, build_city_lookup, standardize_parts  # noqa: E402
+from address_resolver import ReferenceAddress, Resolver, Stage2Model, build_city_lookup, standardize_parts  # noqa: E402
 
 
 def reference(
@@ -133,11 +133,8 @@ class ResolverRegressionTests(unittest.TestCase):
         parsed = resolver.parse("34 john henry ln starkvilee ms")
         resolution = resolver.resolve_stage1(parsed, review_threshold=0.8)
 
+        self.assertEqual("STARKVILLE", parsed.city)
         self.assertEqual("TARGET", resolution.predicted_match_id)
-        self.assertIn(
-            "34 JOHN HENRY LN, STARKVILLE MS",
-            [variant.standardized_address for _, variant in resolver.locality_variants(parsed)],
-        )
 
     def test_trailing_city_without_state_is_parsed_as_locality(self) -> None:
         rows = [
@@ -334,6 +331,214 @@ class ResolverRegressionTests(unittest.TestCase):
         resolution = resolver.resolve_stage1(parsed, review_threshold=0.8)
 
         self.assertEqual("419 WEST PL, MADISON MS", parsed.standardized_address)
+        self.assertEqual("TARGET", resolution.predicted_match_id)
+
+    def test_same_house_candidates_do_not_crowd_out_strong_local_street_match(self) -> None:
+        rows = [
+            reference("TARGET", "385", "COLLEGE VIEW", "ST", "STARKVILLE", zip_code="39759"),
+            *[
+                reference(f"SAME_HOUSE_{index}", "102", f"RANDOM {index}", "RD", "STARKVILLE", zip_code="39759")
+                for index in range(90)
+            ],
+        ]
+        resolver = Resolver(rows, build_city_lookup(rows))
+        parsed = resolver.parse("102 colage view starkville ms")
+        candidate_ids = resolver.candidate_ids(parsed, limit=10)
+
+        self.assertIn("TARGET", candidate_ids)
+
+        model = Stage2Model(resolver=resolver, weights=[0.0] * 28)
+        ranked = model.rank_candidates(parsed, limit=5)
+        resolution = model.resolve(parsed, accept_threshold=0.42, review_threshold=0.8)
+
+        self.assertEqual("TARGET", ranked[0].reference_id)
+        self.assertEqual("", resolution.predicted_match_id)
+        self.assertEqual("stage2_no_match", resolution.stage)
+
+    def test_view_token_can_remain_part_of_street_name(self) -> None:
+        rows = [
+            reference("TARGET", "102", "COLLEGE VIEW", "ST", "STARKVILLE", zip_code="39759"),
+            reference("COTTAGE", "102", "COTTAGE", "LN", "STARKVILLE", zip_code="39759"),
+            reference("CITY_COUNT", "101", "MAIN", "ST", "STARKVILLE", zip_code="39759"),
+        ]
+        resolver = Resolver(rows, build_city_lookup(rows))
+        model = Stage2Model(resolver=resolver, weights=[0.0] * 28)
+
+        parsed = resolver.parse("102 colage view starkvile ms")
+        ranked = model.rank_candidates(parsed, limit=3)
+        resolution = model.resolve(parsed, accept_threshold=0.42, review_threshold=0.8)
+
+        self.assertIn(
+            "102 COLAGE VIEW, STARKVILLE MS",
+            [variant.standardized_address for _, variant in resolver.stage2_variants(parsed)],
+        )
+        self.assertEqual("TARGET", ranked[0].reference_id)
+        self.assertEqual("TARGET", resolution.predicted_match_id)
+
+    def test_house_only_query_returns_no_candidate_suggestions(self) -> None:
+        parsed = self.resolver.parse("102 ....")
+
+        self.assertEqual([], self.resolver.candidate_ids(parsed, limit=10))
+
+    def test_house_plus_city_typo_without_street_returns_no_candidate_suggestions(self) -> None:
+        rows = [
+            reference("STARKVILLE_ADDRESS", "102", "COLLEGE VIEW", "ST", "STARKVILLE", zip_code="39759"),
+            reference("NATCHEZ_ADDRESS", "500", "CANAL", "ST", "NATCHEZ", zip_code="39120"),
+            reference("NATCHEZ_STREET", "500", "NATCHEZ", "ST", "DURANT", zip_code="39090"),
+            reference("GAUTIER_ADDRESS", "2620", "SOUTHERN", "DR", "GAUTIER", zip_code="39553"),
+            reference("GAUTIER_COUNT", "100", "MAIN", "ST", "GAUTIER", zip_code="39553"),
+            reference("UTICA_ADDRESS", "1102", "ROSS", "LN", "UTICA", zip_code="39175"),
+            reference("UTICA_COUNT", "100", "MAIN", "ST", "UTICA", zip_code="39175"),
+        ]
+        resolver = Resolver(rows, build_city_lookup(rows))
+
+        examples = [
+            ("102 .... starkvile ms", "STARKVILLE"),
+            ("500 .... nachez Missppi", "NATCHEZ"),
+            ("2620 .... gaootier", "GAUTIER"),
+            ("1102 .... utiac", "UTICA"),
+        ]
+
+        for raw, city in examples:
+            with self.subTest(raw=raw):
+                parsed = resolver.parse(raw)
+                self.assertEqual(city, parsed.city)
+                self.assertEqual("", parsed.street_name)
+                self.assertEqual([], resolver.candidate_ids(parsed, limit=10))
+
+    def test_trailing_city_typo_without_state_can_be_recovered_from_street_context(self) -> None:
+        rows = [
+            reference("TARGET", "124", "MARTIN LUTHER KING", "DR", "PURVIS", zip_code="39475"),
+            *[
+                reference(f"PURVIS_{index}", str(100 + index), "MAIN", "ST", "PURVIS", zip_code="39475")
+                for index in range(5)
+            ],
+        ]
+        resolver = Resolver(rows, build_city_lookup(rows))
+
+        parsed = resolver.parse("125 marttin luther king drivee purvsi")
+
+        self.assertEqual("PURVIS", parsed.city)
+        self.assertEqual("MARTTIN LUTHER KING", parsed.street_name)
+
+    def test_short_city_typo_prefers_common_city_over_source_typo(self) -> None:
+        rows = [
+            reference("TARGET", "500", "MEADE", "CT", "PEARL", zip_code="39208"),
+            reference("TYPO_CITY", "900", "OTHER", "RD", "PERAL", zip_code="39208"),
+            *[
+                reference(f"PEARL_{index}", str(100 + index), "MAIN", "ST", "PEARL", zip_code="39208")
+                for index in range(20)
+            ],
+        ]
+        resolver = Resolver(rows, build_city_lookup(rows))
+
+        parsed = resolver.parse("500 meade ct perl ms")
+        resolution = resolver.resolve_stage1(parsed, review_threshold=0.8)
+
+        self.assertEqual("PEARL", parsed.city)
+        self.assertEqual("TARGET", resolution.predicted_match_id)
+
+    def test_non_ms_five_digit_house_before_highway_is_not_stolen_as_zip(self) -> None:
+        rows = [
+            reference("TARGET", "12331", "HWY 330", "", "COFFEEVILLE", zip_code="38922"),
+            reference("CITY_COUNT", "100", "MAIN", "ST", "COFFEEVILLE", zip_code="38922"),
+        ]
+        resolver = Resolver(rows, build_city_lookup(rows))
+        model = Stage2Model(resolver=resolver, weights=[0.0] * 28)
+
+        parsed = resolver.parse("12331 hwy 330 coffeville ms")
+        resolution = model.resolve(parsed, accept_threshold=0.42, review_threshold=0.8)
+
+        self.assertEqual("12331", parsed.house_number)
+        self.assertEqual("", parsed.zip_code)
+        self.assertEqual("COFFEEVILLE", parsed.city)
+        self.assertEqual("TARGET", resolution.predicted_match_id)
+
+    def test_unit_typo_can_match_unit_embedded_in_source_street(self) -> None:
+        rows = [
+            reference("TARGET", "300", "MASON ST UNIT 218", "", "LAUREL", zip_code="39440"),
+            reference("NEAR_UNIT", "300", "MASON ST UNIT 216", "", "LAUREL", zip_code="39440"),
+            reference("CITY_COUNT", "100", "MAIN", "ST", "LAUREL", zip_code="39440"),
+        ]
+        resolver = Resolver(rows, build_city_lookup(rows))
+        model = Stage2Model(resolver=resolver, weights=[0.0] * 28)
+
+        parsed = resolver.parse("mason st uniit 218 300 laur ms")
+        ranked = model.rank_candidates(parsed, limit=3)
+        resolution = model.resolve(parsed, accept_threshold=0.42, review_threshold=0.8)
+
+        self.assertEqual("300 MASON ST UNIT 218, LAUREL MS", parsed.standardized_address)
+        self.assertEqual("TARGET", ranked[0].reference_id)
+        self.assertEqual("TARGET", resolution.predicted_match_id)
+
+    def test_reordered_ordinal_street_keeps_later_house_number(self) -> None:
+        rows = [
+            reference("TARGET", "527", "8TH", "AVE", "LAUREL", zip_code="39440"),
+            reference("CITY_COUNT", "100", "MAIN", "ST", "LAUREL", zip_code="39440"),
+        ]
+        resolver = Resolver(rows, build_city_lookup(rows))
+        model = Stage2Model(resolver=resolver, weights=[0.0] * 28)
+
+        parsed = resolver.parse("8th ave 527 laur ms")
+        resolution = model.resolve(parsed, accept_threshold=0.42, review_threshold=0.8)
+
+        self.assertEqual("527", parsed.house_number)
+        self.assertEqual("8TH", parsed.street_name)
+        self.assertEqual("TARGET", resolution.predicted_match_id)
+
+    def test_blvd_typo_bld_resolves_as_boulevard(self) -> None:
+        rows = [
+            reference("TARGET", "146", "ASHTON PARK", "BLVD", "MADISON", zip_code="39110"),
+            reference("CITY_COUNT", "100", "MAIN", "ST", "MADISON", zip_code="39110"),
+        ]
+        resolver = Resolver(rows, build_city_lookup(rows))
+        model = Stage2Model(resolver=resolver, weights=[0.0] * 28)
+
+        parsed = resolver.parse("146 ashon park bld madison ms")
+        resolution = model.resolve(parsed, accept_threshold=0.42, review_threshold=0.8)
+
+        self.assertEqual("BLVD", parsed.street_type)
+        self.assertEqual("TARGET", resolution.predicted_match_id)
+
+    def test_non_ms_state_name_in_middle_can_be_street_name(self) -> None:
+        rows = [
+            reference("TARGET", "1223", "TEXAS", "ST", "NATCHEZ", zip_code="39120"),
+            reference("WRONG_CITY", "1223", "TATE", "ST", "CORINTH", zip_code="38834"),
+            *[
+                reference(f"NATCHEZ_{index}", str(100 + index), "MAIN", "ST", "NATCHEZ", zip_code="39120")
+                for index in range(20)
+            ],
+        ]
+        resolver = Resolver(rows, build_city_lookup(rows))
+        model = Stage2Model(resolver=resolver, weights=[0.0] * 28)
+
+        parsed = resolver.parse("natchze teexas sr 1223")
+        ranked = model.rank_candidates(parsed, limit=3)
+        resolution = model.resolve(parsed, accept_threshold=0.42, review_threshold=0.8)
+
+        self.assertEqual("1223 TEEXAS ST, NATCHEZ MS", parsed.standardized_address)
+        self.assertEqual("TARGET", ranked[0].reference_id)
+        self.assertEqual("TARGET", resolution.predicted_match_id)
+
+    def test_rare_city_typo_is_corrected_before_contextual_reassignment(self) -> None:
+        rows = [
+            reference("TARGET", "1313", "DIVISION", "ST", "WEST POINT", zip_code="39773"),
+            reference("WRONG_CITY", "1313", "MADISON", "ST", "CORINTH", zip_code="38834"),
+            reference("TYPO_CITY", "1", "OTHER", "ST", "WEST OINT", zip_code="39773"),
+            *[
+                reference(f"WEST_POINT_{index}", str(100 + index), "MAIN", "ST", "WEST POINT", zip_code="39773")
+                for index in range(20)
+            ],
+        ]
+        resolver = Resolver(rows, build_city_lookup(rows))
+        model = Stage2Model(resolver=resolver, weights=[0.0] * 28)
+
+        parsed = resolver.parse("divisioon 1313 sr west oint Missppi")
+        ranked = model.rank_candidates(parsed, limit=3)
+        resolution = model.resolve(parsed, accept_threshold=0.42, review_threshold=0.8)
+
+        self.assertEqual("1313 DIVISIOON ST, WEST POINT MS", parsed.standardized_address)
+        self.assertEqual("TARGET", ranked[0].reference_id)
         self.assertEqual("TARGET", resolution.predicted_match_id)
 
 
