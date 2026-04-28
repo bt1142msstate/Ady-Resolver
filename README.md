@@ -56,6 +56,14 @@ cd Ady-Resolver
 python3 -m unittest discover -s tests -v
 ```
 
+Common development commands are also available through `make`:
+
+```bash
+make test    # compile Python, check browser JS syntax, run unit tests
+make smoke   # run the checked-in demo resolver accuracy smoke
+make app     # start the local browser app on 127.0.0.1:8765
+```
+
 Run the local app after building or restoring a reference cache:
 
 ```bash
@@ -66,13 +74,23 @@ Then open `http://127.0.0.1:8765`.
 
 ## Repository Contents
 
-- `src/address_dataset_generator.py` - source downloading, cache handling,
-  parsing, cleanup, and training/evaluation dataset generation.
-- `src/address_resolver.py` - Stage 1 resolver, Stage 2 model, metrics, and
-  CLI entry points.
-- `src/resolver_app.py` - local web app and reference-cache builder.
+- `src/address_dataset_generator.py` - compatibility CLI/facade for dataset
+  generation. Source loading, noise generation, and dataset assembly live in
+  focused modules such as `address_source_*`, `address_openaddresses.py`,
+  `address_maris.py`, `address_noise.py`, and `address_dataset_build.py`.
+- `src/address_resolver.py` - compatibility CLI/facade for the resolver. Shared
+  models, parsing, reference loading, and Stage 2 training/scoring live in
+  `resolver_models.py`, `resolver_parsing.py`, `resolver_reference.py`, and
+  `resolver_stage2.py`.
+- `src/resolver_app.py` - local web app entrypoint. App config, persistence,
+  service logic, HTTP routing, reference-cache building, batch file handling,
+  and static UI assets are split across `resolver_app_*`,
+  `resolver_reference_cache.py`, `resolver_batch_io.py`, `resolver_http.py`,
+  and `src/static/`.
 - `src/train_from_addresses.py` - one-command dataset generation and model
   training for custom address CSVs.
+- `DATA_SOURCES.md` - concise source and coverage guidance for supported public,
+  authoritative, licensed, and manual address data paths.
 - `models/` - small checked-in Stage 2 model JSON artifacts.
 - `examples/` - a small demo reference set and custom-address CSV example for
   fresh clones.
@@ -97,6 +115,9 @@ reference cache.
 The generator now supports real address sources for Mississippi. For exhaustive
 Mississippi coverage, use the MS811/MARIS county shapefile ZIP set and keep the
 county-coverage guard enabled.
+
+See [DATA_SOURCES.md](DATA_SOURCES.md) for a shorter source-quality and
+coverage guide.
 
 - MS811/MARIS full county shapefile ZIPs: production source for all 82
   Mississippi counties when obtained through the MARIS distribution agreement.
@@ -413,8 +434,21 @@ flag, match ID, stage, and the top three candidate addresses.
 ## Tests
 
 ```bash
-python3 -m py_compile src/address_dataset_generator.py src/address_resolver.py src/resolver_app.py
+python3 -m py_compile src/*.py
+node --check src/static/app.js
 python3 -m unittest discover -s tests -v
+```
+
+Or run the same local check set with:
+
+```bash
+make test
+```
+
+Run the checked-in demo accuracy smoke with:
+
+```bash
+make smoke
 ```
 
 ## License

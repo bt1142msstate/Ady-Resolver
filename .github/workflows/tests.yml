@@ -21,9 +21,18 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
       - name: Compile source
         run: |
-          python -m py_compile src/address_dataset_generator.py src/address_resolver.py src/resolver_app.py
+          python -m py_compile src/*.py
+
+      - name: Check browser JavaScript syntax
+        run: |
+          node --check src/static/app.js
 
       - name: Run tests
         run: |
